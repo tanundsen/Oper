@@ -19,6 +19,10 @@ import matplotlib.pyplot as plt
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 
+import os
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_PATH = os.path.join(BASE_DIR, "..", "metocean_monthclim.nc")
+
 # -----------------------------------------------------------
 # Page setup
 # -----------------------------------------------------------
@@ -164,11 +168,6 @@ clip_pct = 99.6
 # -----------------------------------------------------------
 # Load dataset
 # -----------------------------------------------------------
-
-import os
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_PATH = os.path.join(BASE_DIR, "..", "metocean_monthclim.nc")
-
 ds = load_metocean(DATA_PATH)
 
 for k in ["prob","hs_edges","tp_edges","lat3_edges","lon3_edges"]:
