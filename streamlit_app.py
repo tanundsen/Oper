@@ -1,10 +1,6 @@
 # streamlit_app.py
 import streamlit as st
 
-import os
-st.write("Files in working directory:", os.listdir("."))
-st.write("Files in /mount/src:", os.listdir("/mount/src"))
-
 st.set_page_config(
     page_title="Metocean & Operability",
     layout="wide",
