@@ -1,10 +1,11 @@
 # 01_Metocean.py — Metocean Explorer (3° grid)
 # ----------------------------------------------------------
-# Updates in this version:
-# • North Sea zoom uses a selectable projection (default: Lambert Conformal).
-# • Optional "Adapt color scale to zoomed area"—on by default.
-# • Global view remains PlateCarree; only the zoomed map re-projects.
-# • Keeps: turbo colormap, 10 m coastlines, contour labels, robust clipping.
+# Fixed behavior in this version:
+# • Global map: PlateCarree
+# • North Sea zoom: Lambert Conformal (no UI choices)
+# • Colorbar/ticks adapt to zoomed region for Hs/Tp metrics
+# • % metrics stay 0–100 %
+# • 110m features globally (speed), 10m when zoomed (detail)
 # ----------------------------------------------------------
 
 import math
@@ -65,37 +66,29 @@ def hs_ticks(step=0.5, vmin=0, vmax=10):
     return np.arange(lo, hi + step/2, step)
 
 def hs_shading(field, n=60):
-    vmin = np.nanmin(field)
-    vmax = np.nanmax(field)
+    vmin = np.nanmin(field); vmax = np.nanmax(field)
     if vmin == vmax or not np.isfinite(vmin):
         return np.linspace(0, 1, n)
     return np.linspace(vmin, vmax, n)
 
 def tp_ticks(step=1.0, vmin=None, vmax=None):
-    if vmin is None:
-        vmin = 0
-    if vmax is None:
-        vmax = 20
+    if vmin is None: vmin = 0
+    if vmax is None: vmax = 20
     lo = math.floor(vmin / step) * step
     hi = math.ceil(vmax / step) * step
     return np.arange(lo, hi + step*0.5, step)
 
 def tp_shading(field, n=80):
-    vmin = np.nanmin(field)
-    vmax = np.nanmax(field)
+    vmin = np.nanmin(field); vmax = np.nanmax(field)
     if vmin == vmax or not np.isfinite(vmin):
         return np.linspace(0, 20, n)
     return np.linspace(vmin, vmax, n)
 
-def pct_ticks():
-    return np.arange(0, 101, 10)
-
-def pct_shading(n=61):
-    return np.linspace(0, 100, n)
+def pct_ticks(): return np.arange(0, 101, 10)
+def pct_shading(n=61): return np.linspace(0, 100, n)
 
 def auto_levels(arr, n=50):
-    vmin = np.nanmin(arr)
-    vmax = np.nanmax(arr)
+    vmin = np.nanmin(arr); vmax = np.nanmax(arr)
     if vmin == vmax or not np.isfinite(vmin):
         return np.linspace(0, 1, n)
     return np.linspace(vmin, vmax, n)
@@ -146,22 +139,8 @@ with st.sidebar:
     )
 
     st.subheader("View")
+    # One toggle only — no choices
     zoom_ns = st.checkbox("North Sea zoom", value=False)
-
-    # NEW: projection selector (applies only when zoomed)
-    zoom_proj_name = st.selectbox(
-        "Zoom projection",
-        ["Lambert Conformal", "Mercator", "Albers Equal Area", "UTM 31N", "PlateCarree (default)"],
-        index=0,  # default to LCC as requested
-        help="Applies only when North Sea zoom is enabled. Global view remains PlateCarree."
-    )
-
-    # NEW: color scaling behavior for zoom
-    adapt_scale_to_zoom = st.checkbox(
-        "Adapt color scale to zoomed area",
-        value=True,
-        help="When zoomed, compute color scale from the zoomed region (except for % metrics which stay at 0–100%)."
-    )
 
     st.subheader("Debug")
     show_debug = st.checkbox("Show debug", False)
@@ -169,11 +148,12 @@ with st.sidebar:
 # -----------------------------
 # Fixed settings
 # -----------------------------
-# For convenience, keep the extent in lon_min, lon_max, lat_min, lat_max (degrees)
-ZOOM_EXTENT = [-11, 35, 52, 76]   # change here if you want different bounds
+# Requested regional frame; adjust as needed
+# lon_min, lon_max, lat_min, lat_max
+ZOOM_EXTENT = [-13, 35, 52, 72]   # shows up to 72°N; west limit ~13°W, east 35°E
 base_cmap = "turbo"
 levels_generic = 50
-clip_pct_global = 99.6
+clip_pct_robust = 99.6  # robust cap for shading
 
 # -----------------------------
 # Load dataset
@@ -263,23 +243,8 @@ field2d, latp, lonp, flip_lat, lon_sort_idx, lon_inv = to_sorted_lon_lat(
 )
 
 # -----------------------------
-# Color clipping & levels
+# Color scaling & levels
 # -----------------------------
-def get_zoom_projection(name: str):
-    if name == "Lambert Conformal":
-        return ccrs.LambertConformal(
-            central_longitude=10, central_latitude=60, standard_parallels=(50, 65)
-        )
-    if name == "Mercator":
-        return ccrs.Mercator(central_longitude=10, min_latitude=40, max_latitude=82)
-    if name == "Albers Equal Area":
-        return ccrs.AlbersEqualArea(
-            central_longitude=10, central_latitude=60, standard_parallels=(50, 65)
-        )
-    if name == "UTM 31N":
-        return ccrs.UTM(31)  # EPSG:32631
-    return ccrs.PlateCarree()
-
 def region_slice(arr2d, lons, lats, extent):
     lon_min, lon_max, lat_min, lat_max = extent
     j = (lons >= lon_min) & (lons <= lon_max)
@@ -290,11 +255,9 @@ def region_slice(arr2d, lons, lats, extent):
 
 def prep_levels(arr, label, prefer_ticks_from=None):
     """
-    arr: full array used for plotting (after clipping)
-    prefer_ticks_from: array used for computing tick ranges (e.g., zoomed region)
+    prefer_ticks_from: array used for tick range (e.g., zoomed subset)
     """
     base = prefer_ticks_from if prefer_ticks_from is not None else arr
-
     if "P(Hs" in label or "Operability" in label:
         return pct_shading(), pct_ticks(), pct_ticks()
     elif label.startswith("Mean Tp"):
@@ -307,43 +270,39 @@ def prep_levels(arr, label, prefer_ticks_from=None):
         lev = auto_levels(base, levels_generic)
         return lev, lev, None
 
-# Decide which array controls the scaling
 is_percent_metric = ("P(Hs" in label) or ("Operability" in label)
 
-# Global robust clipping (percentile) unless % metric
+# Robust caps
 if is_percent_metric:
     hi_global = 100.0
 else:
-    hi_global = np.nanpercentile(field2d, clip_pct_global)
+    hi_global = np.nanpercentile(field2d, clip_pct_robust)
 
-# If zoomed and adapting, compute region-based scale
-if zoom_ns and adapt_scale_to_zoom and not is_percent_metric:
+# When zoomed: adapt scale to zoomed region (except % metrics)
+if zoom_ns and not is_percent_metric:
     region = region_slice(field2d, lonp, latp, ZOOM_EXTENT)
-    # Use same robust cap for the region to avoid outliers
-    hi_zoom = np.nanpercentile(region, clip_pct_global)
+    hi_zoom = np.nanpercentile(region, clip_pct_robust)
     hi_use = hi_zoom
     ticks_base = np.clip(region, None, hi_zoom)
 else:
     hi_use = hi_global
-    ticks_base = np.clip(field2d, None, hi_global)  # what ticks are derived from
+    ticks_base = np.clip(field2d, None, hi_global)
 
-# Final plot array is always clipped to hi_use
 arr_plot = np.clip(field2d, None, hi_use)
 
-# Levels and ticks
 filled_levels, contour_levels, cbar_ticks = prep_levels(
     arr_plot, label, prefer_ticks_from=ticks_base
 )
-
 cmap_use = base_cmap + "_r" if "Operability" in label else base_cmap
 
 # -----------------------------
 # Plot function
 # -----------------------------
-def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
-             use_zoom_proj: bool, proj_zoom):
-    # Choose projection for the axes
-    ax_proj = proj_zoom if use_zoom_proj else ccrs.PlateCarree()
+def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks, use_zoom: bool):
+    # Projection: PlateCarree (global) or Lambert Conformal (zoom)
+    ax_proj = ccrs.LambertConformal(
+        central_longitude=10, central_latitude=60, standard_parallels=(50, 65)
+    ) if use_zoom else ccrs.PlateCarree()
 
     fig = plt.figure(figsize=(15, 6), dpi=150)
     ax = plt.axes(projection=ax_proj)
@@ -369,13 +328,14 @@ def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
     except Exception:
         pass
 
-    # High‑detail land/coast/borders
-    ax.add_feature(cfeature.LAND.with_scale("10m"), facecolor="lightgray", edgecolor="none", zorder=10)
-    ax.add_feature(cfeature.COASTLINE.with_scale("10m"), linewidth=0.8, zorder=11)
-    ax.add_feature(cfeature.BORDERS.with_scale("10m"), linewidth=0.3, zorder=12)
+    # Feature detail: 10m when zoomed, 110m when global
+    feature_scale = "10m" if use_zoom else "110m"
+    ax.add_feature(cfeature.LAND.with_scale(feature_scale), facecolor="lightgray", edgecolor="none", zorder=10)
+    ax.add_feature(cfeature.COASTLINE.with_scale(feature_scale), linewidth=0.7 if use_zoom else 0.4, zorder=11)
+    ax.add_feature(cfeature.BORDERS.with_scale(feature_scale), linewidth=0.3 if use_zoom else 0.2, zorder=12)
 
-    # View: either set a regional extent (in lon/lat) or global
-    if use_zoom_proj:
+    # Extent
+    if use_zoom:
         ax.set_extent(ZOOM_EXTENT, crs=ccrs.PlateCarree())
     else:
         ax.set_global()
@@ -388,7 +348,7 @@ def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
     st.pyplot(fig, use_container_width=True)
 
 # -----------------------------
-# Render final map
+# Render
 # -----------------------------
 plot_map(
     lonp, latp, arr_plot,
@@ -397,8 +357,7 @@ plot_map(
     contour_levels,
     cmap_use,
     cbar_ticks,
-    use_zoom_proj=zoom_ns,                              # True only when zoomed
-    proj_zoom=get_zoom_projection(zoom_proj_name)       # chosen projection (default LCC)
+    use_zoom=zoom_ns
 )
 
 # -----------------------------
@@ -412,6 +371,5 @@ if show_debug:
     )
     st.write(
         "Color cap (hi_use):", float(hi_use),
-        "| Zoomed:", bool(zoom_ns),
-        "| Adapt scale:", bool(adapt_scale_to_zoom)
+        "| Zoomed:", bool(zoom_ns)
     )
