@@ -225,6 +225,9 @@ p_below = 1 - p_exceed
 # -----------------------------------------------------------
 # Select field
 # -----------------------------------------------------------
+field = None
+label = None
+
 if stat == "Mean Hs (m)":
     field = mean_hs
     label = "Mean Hs (m)" + title_suffix
@@ -241,21 +244,25 @@ elif stat == "Hs P95 (m)":
     field = hs_p95
     label = "Hs P95 (m)" + title_suffix
 elif stat == "P(Hs > Hcrit) (%)":
-    field = 100*p_exceed
+    field = 100 * p_exceed
     label = f"P(Hs > {Hcrit:.1f} m) (%)" + title_suffix
 elif stat == "Operability (% time Hs ≤ Hcrit)":
-    field = 100*p_below
+    field = 100 * p_below
     label = f"Operability (% time Hs ≤ {Hcrit:.1f} m)" + title_suffix
-
-# -----------------------------------------------------------
-# Prepare 2D field
-# -----------------------------------------------------------
+else:
+    st.error(f"Unexpected stat value: {stat!r}")
+    st.stop()
 
 st.write("Reached field selection")
+st.write("stat:", stat)
 st.write("field dims:", field.dims)
 st.write("field shape:", field.shape)
 st.write("label:", label)
 st.stop()
+
+# -----------------------------------------------------------
+# Prepare 2D field
+# -----------------------------------------------------------
 
 field2d = field.transpose("lat3_bin","lon3_bin").values
 
