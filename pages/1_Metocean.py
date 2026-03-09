@@ -158,7 +158,7 @@ with st.sidebar:
 # Fixed settings
 # -----------------------------
 # lon_min, lon_max, lat_min, lat_max
-ZOOM_EXTENT = [-13, 35, 52, 72]   # up to 72°N; west ~13°W; east 35°E
+ZOOM_EXTENT = [-13, 35, 52, 76]   # up to 72°N; west ~13°W; east 35°E
 base_cmap = "turbo"
 levels_generic = 50
 clip_pct_robust = 99.6  # robust cap for shading
