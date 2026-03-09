@@ -190,18 +190,15 @@ tp_c = bin_centers(tp_edges)
 lat_c_unsorted = bin_centers(lat_edges)
 
 # -----------------------------------------------------------
-# Select probability slot
+# DEBUG: Select probability slot
 # -----------------------------------------------------------
 if agg == "By month":
     prob = ds["prob"].sel(month=label_to_idx[chosen_label])
-    title_suffix = f" — {chosen_label}"
 else:
     prob = ds["prob"].sum(dim="month")
-    title_suffix = " — Annual"
 
-_tot_before = prob.sum(dim=("hs_bin","tp_bin"))
-prob = normalize_pdf(prob)
-
+st.write("Total probability:", float(prob.sum()))
+st.stop()
 # -----------------------------------------------------------
 # Compute statistics
 # -----------------------------------------------------------
