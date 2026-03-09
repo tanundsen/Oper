@@ -205,7 +205,6 @@ prob = normalize_pdf(prob)
 st.write("Total probability after normalization:", float(prob.sum()))
 st.write("Min cell total before normalization:", float(_tot_before.min()))
 st.write("Max cell total before normalization:", float(_tot_before.max()))
-st.stop()
 
 # -----------------------------------------------------------
 # Compute statistics
