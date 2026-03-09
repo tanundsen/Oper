@@ -250,12 +250,15 @@ elif stat == "Operability (% time Hs ≤ Hcrit)":
 # -----------------------------------------------------------
 # Prepare 2D field
 # -----------------------------------------------------------
-field2d = field.transpose("lat3_bin","lon3_bin").values
-st.write("Reached transpose")
-st.write("field2d shape:", field2d.shape)
-st.write("field2d dtype:", str(field2d.dtype))
-st.write("field2d min/max:", float(np.nanmin(field2d)), float(np.nanmax(field2d)))
+
+st.write("Reached field selection")
+st.write("field dims:", field.dims)
+st.write("field shape:", field.shape)
+st.write("label:", label)
 st.stop()
+
+field2d = field.transpose("lat3_bin","lon3_bin").values
+
 field2d, latp, lonp, flip_lat, lon_sort_idx, lon_inv = to_sorted_lon_lat(
     field2d, lat_c_unsorted, lon_edges
 )
