@@ -315,18 +315,18 @@ def plot_global_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks):
 
     # Land masking like original
     ax.add_feature(
-        cfeature.LAND.with_scale("110m"),
+        cfeature.LAND.with_scale("50m"),
         facecolor="lightgray",
         edgecolor="none",
         zorder=10
     )
     ax.add_feature(
-        cfeature.COASTLINE.with_scale("110m"),
+        cfeature.COASTLINE.with_scale("50m"),
         linewidth=0.8,
         zorder=11
     )
     ax.add_feature(
-        cfeature.BORDERS.with_scale("110m"),
+        cfeature.BORDERS.with_scale("50m"),
         linewidth=0.3,
         zorder=12
     )
