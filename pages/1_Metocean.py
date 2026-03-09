@@ -7,7 +7,6 @@
 # - Guards for "no finite data" cases to avoid contour crashes
 # - PlateCarree + turbo, 0.5 m Hs ticks, same land masking
 
-from __future__ import annotations
 import os
 import math
 from pathlib import Path
