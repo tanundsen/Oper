@@ -330,7 +330,7 @@ def plot_global_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks):
 
     # Zoom logic
     if zoom_ns:
-        ax.set_extent([-10, 10, 48, 65], crs=ccrs.PlateCarree())
+        ax.set_extent([-10, 10, 48, 72], crs=ccrs.PlateCarree())
     else:
         ax.set_global()
 
