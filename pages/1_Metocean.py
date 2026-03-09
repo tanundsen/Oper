@@ -1,8 +1,9 @@
 # 01_Metocean.py — Metocean Explorer (3° grid)
 # ----------------------------------------------------------
-# Fixed behavior in this version:
-# • Global map: PlateCarree
-# • North Sea zoom: Mercator (no UI choices)
+# Changes in this version:
+# • Global map: PlateCarree (fixed)
+# • Zoomed map: PlateCarree by default, with selector to choose
+#   PlateCarree, Mercator, or Lambert Conformal
 # • Colorbar/ticks adapt to zoomed region for Hs/Tp metrics
 # • % metrics stay 0–100 %
 # • 110m features globally (speed), 10m when zoomed (detail)
@@ -139,8 +140,15 @@ with st.sidebar:
     )
 
     st.subheader("View")
-    # One toggle only — no projection choices
     zoom_ns = st.checkbox("North Sea zoom", value=False)
+
+    # NEW: Projection selector for zoomed view (default PlateCarree)
+    zoom_proj_name = st.selectbox(
+        "Zoom projection",
+        ["PlateCarree (default)", "Mercator", "Lambert Conformal"],
+        index=0,
+        help="Only applies when 'North Sea zoom' is enabled. Global view is always PlateCarree."
+    )
 
     st.subheader("Debug")
     show_debug = st.checkbox("Show debug", False)
@@ -149,7 +157,7 @@ with st.sidebar:
 # Fixed settings
 # -----------------------------
 # lon_min, lon_max, lat_min, lat_max  (adjust if needed)
-ZOOM_EXTENT = [-13, 35, 52, 72]   # shows up to 72°N; W limit ~13°W, E limit 35°E
+ZOOM_EXTENT = [-13, 35, 52, 72]   # up to 72°N ; W ~13°W ; E 35°E
 base_cmap = "turbo"
 levels_generic = 50
 clip_pct_robust = 99.6  # robust cap for shading
@@ -242,6 +250,20 @@ field2d, latp, lonp, flip_lat, lon_sort_idx, lon_inv = to_sorted_lon_lat(
 )
 
 # -----------------------------
+# Projection factory for zoom
+# -----------------------------
+def get_zoom_projection(name: str):
+    if name.startswith("PlateCarree"):
+        return ccrs.PlateCarree()
+    if name == "Mercator":
+        return ccrs.Mercator(central_longitude=10, min_latitude=40, max_latitude=82)
+    if name == "Lambert Conformal":
+        return ccrs.LambertConformal(
+            central_longitude=10, central_latitude=60, standard_parallels=(50, 65)
+        )
+    return ccrs.PlateCarree()
+
+# -----------------------------
 # Color scaling & levels
 # -----------------------------
 def region_slice(arr2d, lons, lats, extent):
@@ -297,10 +319,9 @@ cmap_use = base_cmap + "_r" if "Operability" in label else base_cmap
 # -----------------------------
 # Plot function
 # -----------------------------
-def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks, use_zoom: bool):
-    # Projection: PlateCarree (global) or Mercator (zoom)
-    ax_proj = (ccrs.Mercator(central_longitude=10, min_latitude=40, max_latitude=82)
-               if use_zoom else ccrs.PlateCarree())
+def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks, use_zoom: bool, zoom_proj):
+    # Axes projection: PlateCarree (global) or selected projection (zoom)
+    ax_proj = (zoom_proj if use_zoom else ccrs.PlateCarree())
 
     fig = plt.figure(figsize=(15, 6), dpi=150)
     ax = plt.axes(projection=ax_proj)
@@ -327,7 +348,7 @@ def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks, use_zoom
         pass
 
     # Feature detail: 10m when zoomed, 110m when global
-    feature_scale = "10m" if use_zoom else "50m"
+    feature_scale = "10m" if use_zoom else "110m"
     ax.add_feature(cfeature.LAND.with_scale(feature_scale), facecolor="lightgray", edgecolor="none", zorder=10)
     ax.add_feature(cfeature.COASTLINE.with_scale(feature_scale), linewidth=0.7 if use_zoom else 0.4, zorder=11)
     ax.add_feature(cfeature.BORDERS.with_scale(feature_scale), linewidth=0.3 if use_zoom else 0.2, zorder=12)
@@ -355,7 +376,8 @@ plot_map(
     contour_levels,
     cmap_use,
     cbar_ticks,
-    use_zoom=zoom_ns
+    use_zoom=zoom_ns,
+    zoom_proj=get_zoom_projection(zoom_proj_name)
 )
 
 # -----------------------------
@@ -369,5 +391,6 @@ if show_debug:
     )
     st.write(
         "Color cap (hi_use):", float(hi_use),
-        "| Zoomed:", bool(zoom_ns)
+        "| Zoomed:", bool(zoom_ns),
+        "| Zoom projection:", zoom_proj_name
     )
