@@ -287,65 +287,14 @@ cmap_use = base_cmap + "_r" if "Operability" in label else base_cmap
 # Plot function (original masking restored)
 # -----------------------------------------------------------
 def plot_global_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks):
-
     fig = plt.figure(figsize=(15,6), dpi=150)
-    ax = plt.axes(projection=ccrs.PlateCarree())
+    ax = plt.axes()
 
-    cf = ax.contourf(
-        lon_c, lat_c, arr2d,
-        levels=filled,
-        cmap=cmap,
-        extend="both",
-        transform=ccrs.PlateCarree(),
-        zorder=1
-    )
-
-    try:
-        cs = ax.contour(
-            lon_c, lat_c, arr2d,
-            levels=contours,
-            colors="black",
-            linewidths=0.4,
-            transform=ccrs.PlateCarree(),
-            zorder=2
-        )   
-    except:
-        pass
-
-    # Land masking like original
-    ax.add_feature(
-        cfeature.LAND.with_scale("110m"),
-        facecolor="lightgray",
-        edgecolor="none",
-        zorder=10
-    )
-    ax.add_feature(
-        cfeature.COASTLINE.with_scale("110m"),
-        linewidth=0.8,
-        zorder=11
-    )
-    ax.add_feature(
-        cfeature.BORDERS.with_scale("110m"),
-        linewidth=0.3,
-        zorder=12
-    )
-
-    ax.set_global()
-
-    cb = plt.colorbar(
-        cf, ax=ax,
-        shrink=0.75, aspect=30,
-        pad=0.01,
-        ticks=ticks
-    )
-    cb.set_label(title)
-    cb.ax.tick_params(labelsize=8)
-
+    ax.imshow(arr2d, origin="lower", aspect="auto")
     ax.set_title(title)
-    plt.subplots_adjust(left=0.02, right=0.97, top=0.93, bottom=0.06)
+
     st.pyplot(fig, use_container_width=True)
     plt.close(fig)
-
 # -----------------------------------------------------------
 # Plot
 # -----------------------------------------------------------
