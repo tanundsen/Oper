@@ -150,7 +150,7 @@ with st.sidebar:
 # -----------------------------
 # Requested regional frame; adjust as needed
 # lon_min, lon_max, lat_min, lat_max
-ZOOM_EXTENT = [-15, 36, 55, 71]   # shows up to 72°N; west limit ~13°W, east 35°E
+ZOOM_EXTENT = [-18, 36, 56, 71]   # shows up to 72°N; west limit ~13°W, east 35°E
 base_cmap = "turbo"
 levels_generic = 50
 clip_pct_robust = 99.6  # robust cap for shading
