@@ -2,7 +2,7 @@
 # ----------------------------------------------------------
 # Fixed behavior in this version:
 # • Global map: PlateCarree
-# • North Sea zoom: Lambert Conformal (no UI choices)
+# • North Sea zoom: Mercator (no UI choices)
 # • Colorbar/ticks adapt to zoomed region for Hs/Tp metrics
 # • % metrics stay 0–100 %
 # • 110m features globally (speed), 10m when zoomed (detail)
@@ -139,7 +139,7 @@ with st.sidebar:
     )
 
     st.subheader("View")
-    # One toggle only — no choices
+    # One toggle only — no projection choices
     zoom_ns = st.checkbox("North Sea zoom", value=False)
 
     st.subheader("Debug")
@@ -148,9 +148,8 @@ with st.sidebar:
 # -----------------------------
 # Fixed settings
 # -----------------------------
-# Requested regional frame; adjust as needed
-# lon_min, lon_max, lat_min, lat_max
-ZOOM_EXTENT = [-18, 36, 56, 71]   # shows up to 72°N; west limit ~13°W, east 35°E
+# lon_min, lon_max, lat_min, lat_max  (adjust if needed)
+ZOOM_EXTENT = [-13, 35, 52, 72]   # shows up to 72°N; W limit ~13°W, E limit 35°E
 base_cmap = "turbo"
 levels_generic = 50
 clip_pct_robust = 99.6  # robust cap for shading
@@ -299,10 +298,9 @@ cmap_use = base_cmap + "_r" if "Operability" in label else base_cmap
 # Plot function
 # -----------------------------
 def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks, use_zoom: bool):
-    # Projection: PlateCarree (global) or Lambert Conformal (zoom)
-    ax_proj = ccrs.Mercator(
-        central_longitude=10, central_latitude=60, standard_parallels=(50, 65)
-    ) if use_zoom else ccrs.PlateCarree()
+    # Projection: PlateCarree (global) or Mercator (zoom)
+    ax_proj = (ccrs.Mercator(central_longitude=10, min_latitude=40, max_latitude=82)
+               if use_zoom else ccrs.PlateCarree())
 
     fig = plt.figure(figsize=(15, 6), dpi=150)
     ax = plt.axes(projection=ax_proj)
