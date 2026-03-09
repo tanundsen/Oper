@@ -308,7 +308,7 @@ def plot_global_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks):
             linewidths=0.4,
             transform=ccrs.PlateCarree(),
             zorder=2
-        )
+        )   
     except:
         pass
 
@@ -344,6 +344,7 @@ def plot_global_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks):
     ax.set_title(title)
     plt.subplots_adjust(left=0.02, right=0.97, top=0.93, bottom=0.06)
     st.pyplot(fig, use_container_width=True)
+    plt.close(fig)
 
 # -----------------------------------------------------------
 # Plot
