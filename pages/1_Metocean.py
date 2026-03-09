@@ -227,6 +227,15 @@ mask = xr.DataArray((hs_c > Hcrit).astype(float), dims=["hs_bin"])
 p_exceed = (hs_pdf * mask).sum(dim="hs_bin")
 p_below = 1 - p_exceed
 
+st.write("Mean Hs range:", float(mean_hs.min()), float(mean_hs.max()))
+st.write("Mean Tp range:", float(mean_tp.min()), float(mean_tp.max()))
+st.write("Hs P50 range:", float(hs_p50.min()), float(hs_p50.max()))
+st.write("Hs P90 range:", float(hs_p90.min()), float(hs_p90.max()))
+st.write("Hs P95 range:", float(hs_p95.min()), float(hs_p95.max()))
+st.write("P exceed range:", float(p_exceed.min()), float(p_exceed.max()))
+st.write("P below range:", float(p_below.min()), float(p_below.max()))
+st.stop()
+
 # -----------------------------------------------------------
 # Select field
 # -----------------------------------------------------------
