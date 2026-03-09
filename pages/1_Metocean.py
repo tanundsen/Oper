@@ -1,12 +1,12 @@
 # 01_Metocean.py — Metocean Explorer (3° grid)
 # ----------------------------------------------------------
-# Changes in this version:
+# Features:
 # • Global map: PlateCarree (fixed)
-# • Zoomed map: PlateCarree by default, with selector to choose
-#   PlateCarree, Mercator, or Lambert Conformal
+# • Zoomed map: PlateCarree by default, selector for Mercator/Lambert
 # • Colorbar/ticks adapt to zoomed region for Hs/Tp metrics
-# • % metrics stay 0–100 %
+# • Percent metrics stay 0–100 %
 # • 110m features globally (speed), 10m when zoomed (detail)
+# • North Sea Points of Interest (1–10) visible only when zoomed
 # ----------------------------------------------------------
 
 import math
@@ -142,12 +142,12 @@ with st.sidebar:
     st.subheader("View")
     zoom_ns = st.checkbox("North Sea zoom", value=False)
 
-    # NEW: Projection selector for zoomed view (default PlateCarree)
+    # Projection selector for zoomed view (default PlateCarree)
     zoom_proj_name = st.selectbox(
         "Zoom projection",
         ["PlateCarree (default)", "Mercator", "Lambert Conformal"],
         index=0,
-        help="Only applies when 'North Sea zoom' is enabled. Global view is always PlateCarree."
+        help="Applies only when 'North Sea zoom' is enabled. Global view is always PlateCarree."
     )
 
     st.subheader("Debug")
@@ -156,11 +156,27 @@ with st.sidebar:
 # -----------------------------
 # Fixed settings
 # -----------------------------
-# lon_min, lon_max, lat_min, lat_max  (adjust if needed)
-ZOOM_EXTENT = [-13, 35, 50, 75]   # up to 72°N ; W ~13°W ; E 35°E
+# lon_min, lon_max, lat_min, lat_max
+ZOOM_EXTENT = [-13, 35, 52, 72]   # up to 72°N; west ~13°W; east 35°E
 base_cmap = "turbo"
 levels_generic = 50
 clip_pct_robust = 99.6  # robust cap for shading
+
+# -----------------------------
+# Points of Interest (North Sea fields) – decimal degrees
+# -----------------------------
+POIS = [
+    {"name": "Ekofisk",         "nr": 1,  "lat": 56.5333, "lon":  3.2000},
+    {"name": "Ula",             "nr": 2,  "lat": 57.1000, "lon":  2.8333},
+    {"name": "Sleipner",        "nr": 3,  "lat": 58.3667, "lon":  1.9000},
+    {"name": "Alvheim",         "nr": 4,  "lat": 59.5667, "lon":  1.9667},
+    {"name": "Oseberg",         "nr": 5,  "lat": 60.5000, "lon":  2.8333},
+    {"name": "Knarr",           "nr": 6,  "lat": 61.8833, "lon":  3.8333},
+    {"name": "Ormen Lange",     "nr": 7,  "lat": 63.2500, "lon":  5.0000},
+    {"name": "Skarv",           "nr": 8,  "lat": 65.7500, "lon":  7.6667},
+    {"name": "Aasta Hansteen",  "nr": 9,  "lat": 67.0000, "lon":  8.0000},
+    {"name": "Johan Castberg",  "nr": 10, "lat": 72.0000, "lon": 22.5000},
+]
 
 # -----------------------------
 # Load dataset
@@ -310,16 +326,41 @@ else:
     ticks_base = np.clip(field2d, None, hi_global)
 
 arr_plot = np.clip(field2d, None, hi_use)
-
 filled_levels, contour_levels, cbar_ticks = prep_levels(
     arr_plot, label, prefer_ticks_from=ticks_base
 )
 cmap_use = base_cmap + "_r" if "Operability" in label else base_cmap
 
 # -----------------------------
+# POI drawer
+# -----------------------------
+def draw_pois(ax, pois, text_kws=None):
+    """
+    Draws numbered markers and small labels for POIs.
+    - ax: matplotlib/cartopy axes
+    - pois: list of dicts with keys: name, nr, lat, lon
+    """
+    if text_kws is None:
+        text_kws = dict(
+            fontsize=7, color="black",
+            bbox=dict(facecolor="white", alpha=0.7, edgecolor="none", pad=0.2)
+        )
+    # markers
+    lons = [p["lon"] for p in pois]
+    lats = [p["lat"] for p in pois]
+    ax.scatter(lons, lats, s=28, c="black", marker="o",
+               transform=ccrs.PlateCarree(), zorder=20)
+    # numeric labels (offset slightly to NE)
+    for p in pois:
+        ax.text(p["lon"] + 0.12, p["lat"] + 0.12,
+                f'{p["nr"]}', transform=ccrs.PlateCarree(),
+                zorder=21, **text_kws)
+
+# -----------------------------
 # Plot function
 # -----------------------------
-def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks, use_zoom: bool, zoom_proj):
+def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
+             use_zoom: bool, zoom_proj):
     # Axes projection: PlateCarree (global) or selected projection (zoom)
     ax_proj = (zoom_proj if use_zoom else ccrs.PlateCarree())
 
@@ -359,12 +400,21 @@ def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks, use_zoom
     else:
         ax.set_global()
 
+    # Points of interest: only on zoomed map
+    if use_zoom:
+        draw_pois(ax, POIS)
+
     cb = plt.colorbar(cf, ax=ax, shrink=0.75, aspect=30, pad=0.01, ticks=ticks)
     cb.set_label(title)
     cb.ax.tick_params(labelsize=8)
     ax.set_title(title)
     plt.subplots_adjust(left=0.02, right=0.97, top=0.93, bottom=0.06)
     st.pyplot(fig, use_container_width=True)
+
+    # Compact legend (Nr → Name) below the figure when zoomed
+    if use_zoom:
+        legend_items = ", ".join([f'{p["nr"]}: {p["name"]}' for p in POIS])
+        st.caption(f"**Points of interest (Nr → Name):** {legend_items}")
 
 # -----------------------------
 # Render
