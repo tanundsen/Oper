@@ -128,7 +128,7 @@ with st.sidebar:
     st.caption("Using dataset: metocean_monthclim.nc")
 
     st.subheader("Aggregation")
-    agg = st.radio("Use:", ["By month","Annual"], horizontal=True, index = 1)
+    agg = st.radio("Use:", ["By month","Annual"], horizontal=True, index = 2)
     months = ["Jan","Feb","Mar","Apr","May","Jun",
               "Jul","Aug","Sep","Oct","Nov","Dec"]
     month_vals = np.arange(1,13)
