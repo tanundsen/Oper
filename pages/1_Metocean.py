@@ -327,7 +327,7 @@ def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks, use_zoom
         pass
 
     # Feature detail: 10m when zoomed, 110m when global
-    feature_scale = "10m" if use_zoom else "110m"
+    feature_scale = "10m" if use_zoom else "50m"
     ax.add_feature(cfeature.LAND.with_scale(feature_scale), facecolor="lightgray", edgecolor="none", zorder=10)
     ax.add_feature(cfeature.COASTLINE.with_scale(feature_scale), linewidth=0.7 if use_zoom else 0.4, zorder=11)
     ax.add_feature(cfeature.BORDERS.with_scale(feature_scale), linewidth=0.3 if use_zoom else 0.2, zorder=12)
