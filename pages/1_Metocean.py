@@ -1,12 +1,10 @@
 # 01_Metocean.py — Metocean Explorer (3° grid)
 # ----------------------------------------------------------
-# Updated version:
-#  • Added "North Sea zoom" toggle in sidebar (Option A)
-#  • When enabled: map extent = lon -10→10, lat 48→65
-#  • Uses high‑detail coastline ("10m" scale)
-#  • Visual-only zoom (data remains global)
-#  • Everything else unchanged: PlateCarree, turbo colormap,
-#    contours, ticks, clipping, edges, PDF normalization.
+# Updates in this version:
+# • North Sea zoom uses a selectable projection (default: Lambert Conformal).
+# • Optional "Adapt color scale to zoomed area"—on by default.
+# • Global view remains PlateCarree; only the zoomed map re-projects.
+# • Keeps: turbo colormap, 10 m coastlines, contour labels, robust clipping.
 # ----------------------------------------------------------
 
 import math
@@ -21,15 +19,15 @@ import os
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_PATH = os.path.join(BASE_DIR, "..", "metocean_monthclim.nc")
 
-# -----------------------------------------------------------
+# -----------------------------
 # Page setup
-# -----------------------------------------------------------
+# -----------------------------
 st.set_page_config(layout="wide")
 st.header("🌍 Global wave statistics")
 
-# -----------------------------------------------------------
+# -----------------------------
 # Helpers & caching
-# -----------------------------------------------------------
+# -----------------------------
 @st.cache_resource
 def load_metocean(path: str) -> xr.Dataset:
     return xr.open_dataset(path)
@@ -49,13 +47,11 @@ def to_sorted_lon_lat(field2d, lat_c, lon_edges):
         field2d = field2d[::-1, :]
         lat_c = lat_c[::-1]
         flip_lat = True
-
     lon_unsorted = unwrap_lon_centers_from_edges(lon_edges)
     lon_sort_idx = np.argsort(lon_unsorted)
     lon_sorted = lon_unsorted[lon_sort_idx]
     field2d_sorted = field2d[:, lon_sort_idx]
     lon_inv = np.argsort(lon_sort_idx)
-
     return field2d_sorted, lat_c, lon_sorted, flip_lat, lon_sort_idx, lon_inv
 
 def is_hs_quantity(label):
@@ -101,7 +97,7 @@ def auto_levels(arr, n=50):
     vmin = np.nanmin(arr)
     vmax = np.nanmax(arr)
     if vmin == vmax or not np.isfinite(vmin):
-        return np.linspace(0,1,n)
+        return np.linspace(0, 1, n)
     return np.linspace(vmin, vmax, n)
 
 def normalize_pdf(prob):
@@ -120,17 +116,16 @@ def percentile_from_cdf(cdf, centers, q):
     w = (q - c_lo)/denom
     return h_lo + w*(h_hi - h_lo)
 
-# -----------------------------------------------------------
+# -----------------------------
 # Sidebar
-# -----------------------------------------------------------
+# -----------------------------
 with st.sidebar:
     st.subheader("Data")
     st.caption("Using dataset: metocean_monthclim.nc")
 
     st.subheader("Aggregation")
     agg = st.radio("Use:", ["By month","Annual"], horizontal=True)
-    months = ["Jan","Feb","Mar","Apr","May","Jun",
-              "Jul","Aug","Sep","Oct","Nov","Dec"]
+    months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
     month_vals = np.arange(1,13)
     chosen_label = st.selectbox("Month", months, index=4)
     label_to_idx = dict(zip(months, month_vals))
@@ -150,26 +145,40 @@ with st.sidebar:
         ]
     )
 
-    # NEW: North Sea Zoom Toggle
     st.subheader("View")
     zoom_ns = st.checkbox("North Sea zoom", value=False)
+
+    # NEW: projection selector (applies only when zoomed)
+    zoom_proj_name = st.selectbox(
+        "Zoom projection",
+        ["Lambert Conformal", "Mercator", "Albers Equal Area", "UTM 31N", "PlateCarree (default)"],
+        index=0,  # default to LCC as requested
+        help="Applies only when North Sea zoom is enabled. Global view remains PlateCarree."
+    )
+
+    # NEW: color scaling behavior for zoom
+    adapt_scale_to_zoom = st.checkbox(
+        "Adapt color scale to zoomed area",
+        value=True,
+        help="When zoomed, compute color scale from the zoomed region (except for % metrics which stay at 0–100%)."
+    )
 
     st.subheader("Debug")
     show_debug = st.checkbox("Show debug", False)
 
-# -----------------------------------------------------------
+# -----------------------------
 # Fixed settings
-# -----------------------------------------------------------
-projection = "PlateCarree"
+# -----------------------------
+# For convenience, keep the extent in lon_min, lon_max, lat_min, lat_max (degrees)
+ZOOM_EXTENT = [-11, 35, 52, 76]   # change here if you want different bounds
 base_cmap = "turbo"
 levels_generic = 50
-clip_pct = 99.6
+clip_pct_global = 99.6
 
-# -----------------------------------------------------------
+# -----------------------------
 # Load dataset
-# -----------------------------------------------------------
+# -----------------------------
 ds = load_metocean(DATA_PATH)
-
 for k in ["prob","hs_edges","tp_edges","lat3_edges","lon3_edges"]:
     if k not in ds:
         st.error(f"Dataset missing {k}")
@@ -188,9 +197,9 @@ hs_c = bin_centers(hs_edges)
 tp_c = bin_centers(tp_edges)
 lat_c_unsorted = bin_centers(lat_edges)
 
-# -----------------------------------------------------------
+# -----------------------------
 # Select probability field
-# -----------------------------------------------------------
+# -----------------------------
 if agg == "By month":
     prob = ds["prob"].sel(month=label_to_idx[chosen_label])
     title_suffix = f" — {chosen_label}"
@@ -201,9 +210,9 @@ else:
 _tot_before = prob.sum(dim=("hs_bin","tp_bin"))
 prob = normalize_pdf(prob)
 
-# -----------------------------------------------------------
+# -----------------------------
 # Compute statistics
-# -----------------------------------------------------------
+# -----------------------------
 hs_w = xr.DataArray(hs_c, dims=["hs_bin"])
 tp_w = xr.DataArray(tp_c, dims=["tp_bin"])
 
@@ -212,7 +221,6 @@ mean_tp = (prob*tp_w).sum(dim=("hs_bin","tp_bin"))
 
 hs_pdf = prob.sum(dim="tp_bin")
 hs_cdf = hs_pdf.cumsum(dim="hs_bin")
-
 hs_p50 = percentile_from_cdf(hs_cdf, hs_c, 0.50)
 hs_p90 = percentile_from_cdf(hs_cdf, hs_c, 0.90)
 hs_p95 = percentile_from_cdf(hs_cdf, hs_c, 0.95)
@@ -221,9 +229,9 @@ mask = xr.DataArray((hs_c > Hcrit).astype(float), dims=["hs_bin"])
 p_exceed = (hs_pdf * mask).sum(dim="hs_bin")
 p_below = 1 - p_exceed
 
-# -----------------------------------------------------------
+# -----------------------------
 # Select final field
-# -----------------------------------------------------------
+# -----------------------------
 if stat == "Mean Hs (m)":
     field = mean_hs
     label = "Mean Hs (m)" + title_suffix
@@ -240,63 +248,114 @@ elif stat == "Hs P95 (m)":
     field = hs_p95
     label = "Hs P95 (m)" + title_suffix
 elif stat.startswith("P(Hs"):
-    field = 100*p_exceed
+    field = 100 * p_exceed
     label = f"P(Hs > {Hcrit:.1f} m) (%)" + title_suffix
 else:
-    field = 100*p_below
+    field = 100 * p_below
     label = f"Operability (% time Hs ≤ {Hcrit:.1f} m)" + title_suffix
 
-# -----------------------------------------------------------
-# Prepare 2D field
-# -----------------------------------------------------------
+# -----------------------------
+# Prepare 2D field (sorted lon/lat)
+# -----------------------------
 field2d = field.transpose("lat3_bin","lon3_bin").values
 field2d, latp, lonp, flip_lat, lon_sort_idx, lon_inv = to_sorted_lon_lat(
     field2d, lat_c_unsorted, lon_edges
 )
 
-# Clipping
-if ("P(Hs" in label) or ("Operability" in label):
-    clip_use = 100
-else:
-    clip_use = clip_pct
+# -----------------------------
+# Color clipping & levels
+# -----------------------------
+def get_zoom_projection(name: str):
+    if name == "Lambert Conformal":
+        return ccrs.LambertConformal(
+            central_longitude=10, central_latitude=60, standard_parallels=(50, 65)
+        )
+    if name == "Mercator":
+        return ccrs.Mercator(central_longitude=10, min_latitude=40, max_latitude=82)
+    if name == "Albers Equal Area":
+        return ccrs.AlbersEqualArea(
+            central_longitude=10, central_latitude=60, standard_parallels=(50, 65)
+        )
+    if name == "UTM 31N":
+        return ccrs.UTM(31)  # EPSG:32631
+    return ccrs.PlateCarree()
 
-hi = np.nanpercentile(field2d, clip_use)
-field2d = np.clip(field2d, None, hi)
+def region_slice(arr2d, lons, lats, extent):
+    lon_min, lon_max, lat_min, lat_max = extent
+    j = (lons >= lon_min) & (lons <= lon_max)
+    i = (lats >= lat_min) & (lats <= lat_max)
+    if not np.any(i) or not np.any(j):
+        return arr2d  # fallback
+    return arr2d[np.ix_(i, j)]
 
-# Levels
-def prep_levels(arr, label):
+def prep_levels(arr, label, prefer_ticks_from=None):
+    """
+    arr: full array used for plotting (after clipping)
+    prefer_ticks_from: array used for computing tick ranges (e.g., zoomed region)
+    """
+    base = prefer_ticks_from if prefer_ticks_from is not None else arr
+
     if "P(Hs" in label or "Operability" in label:
         return pct_shading(), pct_ticks(), pct_ticks()
     elif label.startswith("Mean Tp"):
-        ticks = tp_ticks(1.0, np.nanmin(arr), np.nanmax(arr))
-        return tp_shading(arr), ticks, ticks
+        ticks = tp_ticks(1.0, np.nanmin(base), np.nanmax(base))
+        return tp_shading(base), ticks, ticks
     elif is_hs_quantity(label):
-        ticks = hs_ticks(0.5, np.nanmin(arr), np.nanmax(arr))
-        return hs_shading(arr), ticks, ticks
+        ticks = hs_ticks(0.5, np.nanmin(base), np.nanmax(base))
+        return hs_shading(base), ticks, ticks
     else:
-        lev = auto_levels(arr, levels_generic)
+        lev = auto_levels(base, levels_generic)
         return lev, lev, None
 
-filled_levels, contour_levels, cbar_ticks = prep_levels(field2d, label)
+# Decide which array controls the scaling
+is_percent_metric = ("P(Hs" in label) or ("Operability" in label)
+
+# Global robust clipping (percentile) unless % metric
+if is_percent_metric:
+    hi_global = 100.0
+else:
+    hi_global = np.nanpercentile(field2d, clip_pct_global)
+
+# If zoomed and adapting, compute region-based scale
+if zoom_ns and adapt_scale_to_zoom and not is_percent_metric:
+    region = region_slice(field2d, lonp, latp, ZOOM_EXTENT)
+    # Use same robust cap for the region to avoid outliers
+    hi_zoom = np.nanpercentile(region, clip_pct_global)
+    hi_use = hi_zoom
+    ticks_base = np.clip(region, None, hi_zoom)
+else:
+    hi_use = hi_global
+    ticks_base = np.clip(field2d, None, hi_global)  # what ticks are derived from
+
+# Final plot array is always clipped to hi_use
+arr_plot = np.clip(field2d, None, hi_use)
+
+# Levels and ticks
+filled_levels, contour_levels, cbar_ticks = prep_levels(
+    arr_plot, label, prefer_ticks_from=ticks_base
+)
 
 cmap_use = base_cmap + "_r" if "Operability" in label else base_cmap
 
-# -----------------------------------------------------------
-# Plot function (updated with 10m coastline + zoom toggle)
-# -----------------------------------------------------------
-def plot_global_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks):
-    fig = plt.figure(figsize=(15,6), dpi=150)
-    ax = plt.axes(projection=ccrs.PlateCarree())
+# -----------------------------
+# Plot function
+# -----------------------------
+def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
+             use_zoom_proj: bool, proj_zoom):
+    # Choose projection for the axes
+    ax_proj = proj_zoom if use_zoom_proj else ccrs.PlateCarree()
+
+    fig = plt.figure(figsize=(15, 6), dpi=150)
+    ax = plt.axes(projection=ax_proj)
 
     cf = ax.contourf(
         lon_c, lat_c, arr2d,
         levels=filled,
         cmap=cmap,
         extend="both",
-        transform=ccrs.PlateCarree(),
+        transform=ccrs.PlateCarree(),  # data is lon/lat
         zorder=1
     )
-
     try:
         cs = ax.contour(
             lon_c, lat_c, arr2d,
@@ -307,65 +366,52 @@ def plot_global_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks):
             zorder=2
         )
         ax.clabel(cs, fontsize=6, inline=True, fmt="%g")
-    except:
+    except Exception:
         pass
 
-    # High‑detail coastline
-    ax.add_feature(
-        cfeature.LAND.with_scale("10m"),
-        facecolor="lightgray",
-        edgecolor="none",
-        zorder=10
-    )
-    ax.add_feature(
-        cfeature.COASTLINE.with_scale("10m"),
-        linewidth=0.8,
-        zorder=11
-    )
-    ax.add_feature(
-        cfeature.BORDERS.with_scale("10m"),
-        linewidth=0.3,
-        zorder=12
-    )
+    # High‑detail land/coast/borders
+    ax.add_feature(cfeature.LAND.with_scale("10m"), facecolor="lightgray", edgecolor="none", zorder=10)
+    ax.add_feature(cfeature.COASTLINE.with_scale("10m"), linewidth=0.8, zorder=11)
+    ax.add_feature(cfeature.BORDERS.with_scale("10m"), linewidth=0.3, zorder=12)
 
-    # Zoom logic
-    if zoom_ns:
-        ax.set_extent([-11, 35, 52, 76], crs=ccrs.PlateCarree())
+    # View: either set a regional extent (in lon/lat) or global
+    if use_zoom_proj:
+        ax.set_extent(ZOOM_EXTENT, crs=ccrs.PlateCarree())
     else:
         ax.set_global()
 
-    cb = plt.colorbar(
-        cf, ax=ax,
-        shrink=0.75, aspect=30,
-        pad=0.01,
-        ticks=ticks
-    )
+    cb = plt.colorbar(cf, ax=ax, shrink=0.75, aspect=30, pad=0.01, ticks=ticks)
     cb.set_label(title)
     cb.ax.tick_params(labelsize=8)
-
     ax.set_title(title)
     plt.subplots_adjust(left=0.02, right=0.97, top=0.93, bottom=0.06)
     st.pyplot(fig, use_container_width=True)
 
-# -----------------------------------------------------------
+# -----------------------------
 # Render final map
-# -----------------------------------------------------------
-plot_global_map(
-    lonp, latp, field2d,
+# -----------------------------
+plot_map(
+    lonp, latp, arr_plot,
     label,
     filled_levels,
     contour_levels,
     cmap_use,
-    cbar_ticks
+    cbar_ticks,
+    use_zoom_proj=zoom_ns,                              # True only when zoomed
+    proj_zoom=get_zoom_projection(zoom_proj_name)       # chosen projection (default LCC)
 )
 
-# -----------------------------------------------------------
+# -----------------------------
 # Debug
-# -----------------------------------------------------------
+# -----------------------------
 if show_debug:
-    st.write("Totals BEFORE normalization:",
-             float(_tot_before.min()),
-             float(_tot_before.max()))
-    st.write("Mean Hs (global):",
-             float(np.nanmin(mean_hs)),
-             float(np.nanmax(mean_hs)))
+    st.write(
+        "Totals BEFORE normalization:",
+        float(_tot_before.min()),
+        float(_tot_before.max())
+    )
+    st.write(
+        "Color cap (hi_use):", float(hi_use),
+        "| Zoomed:", bool(zoom_ns),
+        "| Adapt scale:", bool(adapt_scale_to_zoom)
+    )
