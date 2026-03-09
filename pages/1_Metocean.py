@@ -132,7 +132,7 @@ with st.sidebar:
     months = ["Jan","Feb","Mar","Apr","May","Jun",
               "Jul","Aug","Sep","Oct","Nov","Dec"]
     month_vals = np.arange(1,13)
-    chosen_label = st.selectbox("Month", months, index=12)
+    chosen_label = st.selectbox("Month", months, index=11)
     label_to_idx = dict(zip(months, month_vals))
 
     st.subheader("Statistic")
