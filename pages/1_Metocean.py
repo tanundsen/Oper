@@ -300,7 +300,7 @@ cmap_use = base_cmap + "_r" if "Operability" in label else base_cmap
 # -----------------------------
 def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks, use_zoom: bool):
     # Projection: PlateCarree (global) or Lambert Conformal (zoom)
-    ax_proj = ccrs.LambertConformal(
+    ax_proj = ccrs.Mercator(
         central_longitude=10, central_latitude=60, standard_parallels=(50, 65)
     ) if use_zoom else ccrs.PlateCarree()
 
