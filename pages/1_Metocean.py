@@ -17,6 +17,7 @@ import matplotlib.pyplot as plt
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 import os
+from matplotlib import patheffects
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_PATH = os.path.join(BASE_DIR, "..", "metocean_monthclim.nc")
@@ -334,28 +335,47 @@ cmap_use = base_cmap + "_r" if "Operability" in label else base_cmap
 # -----------------------------
 # POI drawer
 # -----------------------------
-def draw_pois(ax, pois, text_kws=None):
+def draw_pois(ax, pois):
     """
-    Draws numbered markers and small labels for POIs.
+    Draws numbered markers and labels 'Nr Name' for POIs on the zoomed map.
     - ax: matplotlib/cartopy axes
     - pois: list of dicts with keys: name, nr, lat, lon
     """
-    if text_kws is None:
-        text_kws = dict(
-            fontsize=7, color="black",
-            bbox=dict(facecolor="white", alpha=0.7, edgecolor="none", pad=0.2)
-        )
-    # markers
+    # Base marker style
     lons = [p["lon"] for p in pois]
     lats = [p["lat"] for p in pois]
-    ax.scatter(lons, lats, s=28, c="black", marker="o",
-               transform=ccrs.PlateCarree(), zorder=20)
-    # numeric labels (offset slightly to NE)
-    for p in pois:
-        ax.text(p["lon"] + 0.12, p["lat"] + 0.12,
-                f'{p["nr"]}', transform=ccrs.PlateCarree(),
-                zorder=21, **text_kws)
+    ax.scatter(
+        lons, lats, s=28, c="black", marker="o",
+        transform=ccrs.PlateCarree(), zorder=20
+    )
 
+    # Slight per-point offsets (deg) to reduce overlaps in dense clusters
+    # Tune here if any labels collide on your screen
+    offsets = {
+        # nr: (dx, dy)
+         1: ( 0.12,  0.10),  # Ekofisk
+         2: ( 0.12,  0.10),  # Ula
+         3: ( 0.14,  0.10),  # Sleipner
+         4: ( 0.14,  0.12),  # Alvheim
+         5: ( 0.14,  0.12),  # Oseberg
+         6: ( 0.12,  0.12),  # Knarr
+         7: ( 0.12,  0.12),  # Ormen Lange
+         8: ( 0.12,  0.12),  # Skarv
+         9: ( 0.12,  0.12),  # Aasta Hansteen
+        10: ( 0.14,  0.12),  # Johan Castberg
+    }
+
+    # Text style: small font with white halo for readability
+    halo = [patheffects.withStroke(linewidth=2.2, foreground="white", alpha=0.9)]
+    for p in pois:
+        dx, dy = offsets.get(p["nr"], (0.12, 0.12))
+        ax.text(
+            p["lon"] + dx, p["lat"] + dy,
+            f'{p["nr"]} {p["name"]}',
+            transform=ccrs.PlateCarree(),
+            fontsize=7, color="black", zorder=21,
+            path_effects=halo
+        )
 # -----------------------------
 # Plot function
 # -----------------------------
