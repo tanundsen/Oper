@@ -282,7 +282,7 @@ field2d, lat_plot, lon_plot, flip_lat, lon_sort_idx, lon_inv = to_sorted_lon_lat
 )
 
 # Clip for non-% maps (keeps bright outliers under control)
-if ("P(Hs" in label) or ("Operability" in label)):
+if ("P(Hs" in label) or ("Operability" in label):
     clip_use = 100.0
 else:
     clip_use = clip_pct_default
@@ -300,7 +300,7 @@ if clip_use < 100.0:
 # Level/tick selection
 # -----------------------------------------------------------
 def prep_levels(arr: np.ndarray, label: str):
-    if ("P(Hs" in label) or ("Operability" in label)):
+    if ("P(Hs" in label) or ("Operability" in label):
         ticks = pct_ticks()
         return pct_shading(), ticks, ticks, base_cmap + "_r"
     elif label.startswith("Mean Tp"):
