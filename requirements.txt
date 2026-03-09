@@ -6,6 +6,7 @@ matplotlib
 cartopy
 folium
 streamlit-folium
+plotly
 
 # NETCDF support (CRITICAL!)
 netcdf4

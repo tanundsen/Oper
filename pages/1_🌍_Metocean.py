@@ -1,106 +1,48 @@
-# 01_Metocean.py — Metocean Explorer (3° grid)
-# ----------------------------------------------------------
-# Regenerated full page with:
-# • North Sea / Norwegian Sea zoom (lon -13→35, lat 48→72)
-# • Cloud‑safe coastlines using NaturalEarthFeature (no downloads)
-# • Same plotting logic, PDF normalization, colorbars, turbo colormap
-# ----------------------------------------------------------
+# 01_Metocean.py — Metocean Explorer (Plotly Version)
+# -------------------------------------------------------------------
+# • Fully replaces Cartopy with Plotly (no downloads, cloud-safe)
+# • Global mode + North Sea zoom toggle
+# • Same statistics: Mean Hs, Mean Tp, P(Hs>Hcrit), percentiles, etc.
+# • Uses Plotly's built‑in coastlines (high detail, works everywhere)
+# • Extended zoom region: lon -13→35, lat 48→72
+# -------------------------------------------------------------------
 
 import math
 import numpy as np
 import xarray as xr
 import streamlit as st
-import matplotlib.pyplot as plt
-import cartopy.crs as ccrs
-from cartopy.feature import NaturalEarthFeature
+import pandas as pd
+import plotly.express as px
 import os
 
+# ---------------------------------------
+# Paths
+# ---------------------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_PATH = os.path.join(BASE_DIR, "..", "metocean_monthclim.nc")
 
-# -----------------------------------------------------------
-# Streamlit page config
-# -----------------------------------------------------------
+# ---------------------------------------
+# Streamlit Page
+# ---------------------------------------
 st.set_page_config(layout="wide")
-st.header("🌍 Global wave statistics")
+st.header("🌍 Global wave statistics (Plotly version)")
 
-# -----------------------------------------------------------
+# ---------------------------------------
 # Cache dataset
-# -----------------------------------------------------------
+# ---------------------------------------
 @st.cache_resource
 def load_metocean(path: str) -> xr.Dataset:
     return xr.open_dataset(path)
 
-# -----------------------------------------------------------
-# Helper functions
-# -----------------------------------------------------------
+# ---------------------------------------
+# Helpers
+# ---------------------------------------
 def bin_centers(edges):
     return 0.5 * (edges[:-1] + edges[1:])
 
-def unwrap_lon_centers_from_edges(lon_edges):
-    lon_c = bin_centers(lon_edges)
-    if np.nanmax(lon_edges) > 180:
-        lon_c = ((lon_c + 180) % 360) - 180
-    return lon_c
-
-def to_sorted_lon_lat(field2d, lat_c, lon_edges):
-    flip_lat = False
-    if lat_c[0] > lat_c[-1]:
-        field2d = field2d[::-1, :]
-        lat_c = lat_c[::-1]
-        flip_lat = True
-
-    lon_unsorted = unwrap_lon_centers_from_edges(lon_edges)
-    lon_sort_idx = np.argsort(lon_unsorted)
-    lon_sorted = lon_unsorted[lon_sort_idx]
-    field2d_sorted = field2d[:, lon_sort_idx]
-    lon_inv = np.argsort(lon_sort_idx)
-
-    return field2d_sorted, lat_c, lon_sorted, flip_lat, lon_sort_idx, lon_inv
-
-def is_hs_quantity(label):
-    return ("hs" in label.lower()) and ("%" not in label.lower())
-
-def hs_ticks(step=0.5, vmin=0, vmax=10):
-    lo = math.floor(vmin / step) * step
-    hi = math.ceil(vmax / step) * step
-    return np.arange(lo, hi + step/2, step)
-
-def hs_shading(arr, n=60):
-    vmin = np.nanmin(arr)
-    vmax = np.nanmax(arr)
-    if vmin == vmax or not np.isfinite(vmin):
-        return np.linspace(0,1,n)
-    return np.linspace(vmin, vmax, n)
-
-def tp_ticks(step=1.0, vmin=0, vmax=20):
-    lo = math.floor(vmin / step) * step
-    hi = math.ceil(vmax / step) * step
-    return np.arange(lo, hi + step/2, step)
-
-def tp_shading(arr, n=80):
-    vmin = np.nanmin(arr)
-    vmax = np.nanmax(arr)
-    if vmin == vmax or not np.isfinite(vmin):
-        return np.linspace(0,20,n)
-    return np.linspace(vmin, vmax, n)
-
-def pct_ticks():
-    return np.arange(0,101,10)
-
-def pct_shading():
-    return np.linspace(0,100,61)
-
-def auto_levels(arr, n=50):
-    vmin = np.nanmin(arr)
-    vmax = np.nanmax(arr)
-    if vmin == vmax or not np.isfinite(vmin):
-        return np.linspace(0,1,n)
-    return np.linspace(vmin, vmax, n)
-
 def normalize_pdf(prob):
     tot = prob.sum(dim=("hs_bin","tp_bin"))
-    return xr.where(tot > 0, prob / tot, 0)
+    return xr.where(tot > 0, prob/tot, 0)
 
 def percentile_from_cdf(cdf, centers, q):
     idx_hi = (cdf >= q).argmax(dim="hs_bin")
@@ -114,24 +56,20 @@ def percentile_from_cdf(cdf, centers, q):
     w = (q - c_lo)/denom
     return h_lo + w*(h_hi - h_lo)
 
-# -----------------------------------------------------------
-# Sidebar UI
-# -----------------------------------------------------------
+# ---------------------------------------
+# Sidebar controls
+# ---------------------------------------
 with st.sidebar:
-    st.subheader("Data")
-    st.caption("Using dataset: metocean_monthclim.nc")
-
     st.subheader("Aggregation")
     agg = st.radio("Use:", ["By month","Annual"], horizontal=True)
 
     months = ["Jan","Feb","Mar","Apr","May","Jun",
               "Jul","Aug","Sep","Oct","Nov","Dec"]
-    month_vals = np.arange(1,13)
-    chosen_label = st.selectbox("Month", months, index=0)
-    label_to_idx = dict(zip(months, month_vals))
+    month_index = st.selectbox("Month", list(range(1,13)), 
+                               format_func=lambda i: months[i-1])
 
     st.subheader("Statistic")
-    Hcrit = st.number_input("Hs threshold (m)", 0.1, 15.0, 2.5, step=0.1)
+    Hcrit = st.number_input("Hs threshold (m)", 0.1, 15.0, 2.5)
     stat = st.selectbox(
         "Statistic:",
         [
@@ -146,44 +84,47 @@ with st.sidebar:
     )
 
     st.subheader("View")
-    zoom_ns = st.checkbox("North Sea zoom", value=False)
+    zoom_ns = st.checkbox("North Sea zoom (48–72N, -13–35E)", value=False)
 
     st.subheader("Debug")
     show_debug = st.checkbox("Show debug info", False)
 
-# -----------------------------------------------------------
+# ---------------------------------------
 # Load dataset
-# -----------------------------------------------------------
+# ---------------------------------------
 ds = load_metocean(DATA_PATH)
 
 hs_edges = ds["hs_edges"].values
 tp_edges = ds["tp_edges"].values
 
+# Unit correction
 units = str(ds["hs_edges"].attrs.get("units","")).lower()
 if "cm" in units or (np.nanmax(hs_edges) > 50 and "m" not in units):
-    hs_edges = hs_edges / 100.0
+    hs_edges = hs_edges/100.0
 
 hs_c = bin_centers(hs_edges)
 tp_c = bin_centers(tp_edges)
 
 lat_edges = ds["lat3_edges"].values
 lon_edges = ds["lon3_edges"].values
-lat_c_unsorted = bin_centers(lat_edges)
+lat_c = bin_centers(lat_edges)
+lon_c = bin_centers(lon_edges)
 
-# Select PDF
+# ---------------------------------------
+# Select probability field
+# ---------------------------------------
 if agg == "By month":
-    prob = ds["prob"].sel(month=label_to_idx[chosen_label])
-    title_suffix = f" — {chosen_label}"
+    prob = ds["prob"].sel(month=month_index)
+    title_suffix = f" — {months[month_index-1]}"
 else:
     prob = ds["prob"].sum(dim="month")
     title_suffix = " — Annual"
 
-_tot_before = prob.sum(dim=("hs_bin","tp_bin"))
 prob = normalize_pdf(prob)
 
-# -----------------------------------------------------------
+# ---------------------------------------
 # Compute statistics
-# -----------------------------------------------------------
+# ---------------------------------------
 hs_w = xr.DataArray(hs_c, dims=["hs_bin"])
 tp_w = xr.DataArray(tp_c, dims=["tp_bin"])
 
@@ -197,13 +138,12 @@ hs_p50 = percentile_from_cdf(hs_cdf, hs_c, 0.50)
 hs_p90 = percentile_from_cdf(hs_cdf, hs_c, 0.90)
 hs_p95 = percentile_from_cdf(hs_cdf, hs_c, 0.95)
 
-mask = xr.DataArray((hs_c > Hcrit).astype(float), dims=["hs_bin"])
-p_exceed = (hs_pdf * mask).sum(dim="hs_bin")
+p_exceed = (hs_pdf * (hs_c > Hcrit)).sum(dim="hs_bin")
 p_below = 1 - p_exceed
 
-# -----------------------------------------------------------
-# Select output field
-# -----------------------------------------------------------
+# ---------------------------------------
+# Select the correct field
+# ---------------------------------------
 if stat == "Mean Hs (m)":
     field = mean_hs
 elif stat == "Mean Tp (s)":
@@ -221,119 +161,47 @@ else:
 
 label = f"{stat}{title_suffix}"
 
-# -----------------------------------------------------------
-# Prepare for plotting
-# -----------------------------------------------------------
-field2d = field.transpose("lat3_bin","lon3_bin").values
-field2d, latp, lonp, flip_lat, lon_sort_idx, lon_inv = to_sorted_lon_lat(
-    field2d, lat_c_unsorted, lon_edges
+# ---------------------------------------
+# Construct DataFrame for Plotly
+# ---------------------------------------
+arr2d = field.transpose("lat3_bin","lon3_bin").values
+
+df = pd.DataFrame(arr2d, index=lat_c, columns=lon_c)
+df = df.reset_index().melt(id_vars="index")
+df.columns = ["lat", "lon", "value"]
+
+# ---------------------------------------
+# Make the Plotly figure
+# ---------------------------------------
+fig = px.density_mapbox(
+    df,
+    lat="lat",
+    lon="lon",
+    z="value",
+    radius=1,  # no smoothing, ERA5 is coarse
+    center={"lat": 60, "lon": 0},
+    zoom=1,
+    color_continuous_scale="Turbo",
+    height=650,
+    mapbox_style="carto-positron"
 )
 
-# Clip non‑% maps
-clip_pct = 99.6
-if "P(Hs" in stat or "Operability" in stat:
-    hi = 100
-else:
-    hi = np.nanpercentile(field2d, clip_pct)
-
-field2d = np.clip(field2d, None, hi)
-
-# Levels
-def prep_levels(arr, lbl):
-    if "P(Hs" in lbl or "Operability" in lbl:
-        return pct_shading(), pct_ticks(), pct_ticks()
-    elif lbl.startswith("Mean Tp"):
-        ticks = tp_ticks(1.0, np.nanmin(arr), np.nanmax(arr))
-        return tp_shading(arr), ticks, ticks
-    elif is_hs_quantity(lbl):
-        ticks = hs_ticks(0.5, np.nanmin(arr), np.nanmax(arr))
-        return hs_shading(arr), ticks, ticks
-    else:
-        lev = auto_levels(arr, 50)
-        return lev, lev, None
-
-filled_levels, contour_levels, cbar_ticks = prep_levels(field2d, label)
-
-# -----------------------------------------------------------
-# Plot function (no downloads, cloud‑safe)
-# -----------------------------------------------------------
-def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks):
-
-    fig = plt.figure(figsize=(15,6), dpi=150)
-    ax = plt.axes(projection=ccrs.PlateCarree())
-
-    cf = ax.contourf(
-        lon_c, lat_c, arr2d,
-        levels=filled,
-        cmap=cmap,
-        transform=ccrs.PlateCarree(),
-        extend="both",
-        zorder=1
-    )
-
-    try:
-        cs = ax.contour(
-            lon_c, lat_c, arr2d,
-            levels=contours,
-            colors="black",
-            linewidths=0.35,
-            transform=ccrs.PlateCarree(),
-            zorder=2
+# Apply zoom extent
+if zoom_ns:
+    fig.update_layout(
+        mapbox=dict(
+            center={"lat": 60, "lon": 10},
+            zoom=3.4  # tuned for your region
         )
-        ax.clabel(cs, fontsize=6, inline=True, fmt="%g")
-    except:
-        pass
-
-    # ---- Cloud‑safe coastline (no downloads) ----
-    land = NaturalEarthFeature("physical", "land", "110m",
-                               edgecolor="none", facecolor="lightgray")
-    coast = NaturalEarthFeature("physical", "coastline", "110m",
-                                edgecolor="black", facecolor="none")
-    borders = NaturalEarthFeature("cultural", "admin_0_boundary_lines_land", "110m",
-                                  edgecolor="black", facecolor="none")
-
-    ax.add_feature(land, zorder=10)
-    ax.add_feature(coast, zorder=11)
-    ax.add_feature(borders, zorder=12)
-
-    # ---- Zoom region ----
-    if zoom_ns:
-        ax.set_extent([-13, 35, 48, 72], crs=ccrs.PlateCarree())
-    else:
-        ax.set_global()
-
-    cb = plt.colorbar(
-        cf, ax=ax, shrink=0.75, aspect=30,
-        pad=0.01, ticks=ticks
     )
-    cb.set_label(title)
-    cb.ax.tick_params(labelsize=8)
 
-    ax.set_title(title)
-    plt.subplots_adjust(left=0.02, right=0.97, top=0.93, bottom=0.06)
-
-    st.pyplot(fig, width="stretch")
-
-# -----------------------------------------------------------
-# Render map
-# -----------------------------------------------------------
-cmap_use = "turbo_r" if "Operability" in stat else "turbo"
-
-plot_map(
-    lonp, latp, field2d,
-    label,
-    filled_levels,
-    contour_levels,
-    cmap_use,
-    cbar_ticks
+fig.update_layout(
+    margin={"r":0,"t":50,"l":0,"b":0},
+    coloraxis_colorbar_title=label
 )
 
-# -----------------------------------------------------------
+st.plotly_chart(fig, use_container_width=True)
+
 # Debug
-# -----------------------------------------------------------
 if show_debug:
-    st.write("Totals BEFORE normalization:",
-             float(_tot_before.min()), float(_tot_before.max()))
-    st.write("Mean Hs (global min,max):",
-             float(np.nanmin(mean_hs)),
-             float(np.nanmax(mean_hs)))
+    st.write("Field stats:", float(np.nanmin(arr2d)), float(np.nanmax(arr2d)))
