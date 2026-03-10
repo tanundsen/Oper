@@ -20,7 +20,13 @@ import os
 from matplotlib import patheffects
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_PATH = os.path.join(BASE_DIR, "..", "metocean_monthclim.nc")
+
+# GLOBAL 3° dataset (unchanged)
+GLOBAL_DATA_PATH = os.path.join(BASE_DIR, "..", "metocean_monthclim.nc")
+
+# REGIONAL 0.5° dataset (new)
+REGIONAL_DATA_PATH = os.path.join(BASE_DIR, "..", "metocean_scatter_050deg_NS_monthclim.nc")
+
 
 # -----------------------------
 # Page setup
@@ -182,7 +188,15 @@ POIS = [
 # -----------------------------
 # Load dataset
 # -----------------------------
-ds = load_metocean(DATA_PATH)
+
+# Hybrid data loading:
+# - Global → use 3° file
+# - Zoomed → use 0.5° file
+if zoom_ns:
+    ds = load_metocean(REGIONAL_DATA_PATH)
+else:
+    ds = load_metocean(GLOBAL_DATA_PATH)
+
 for k in ["prob","hs_edges","tp_edges","lat3_edges","lon3_edges"]:
     if k not in ds:
         st.error(f"Dataset missing {k}")
@@ -291,22 +305,46 @@ def region_slice(arr2d, lons, lats, extent):
         return arr2d  # fallback
     return arr2d[np.ix_(i, j)]
 
-def prep_levels(arr, label, prefer_ticks_from=None):
+def prep_levels(arr, label, prefer_ticks_from=None, zoom=False):
     """
-    prefer_ticks_from: array used for tick range (e.g., zoomed subset)
+    prefer_ticks_from: array used for tick range (zoomed subset)
+    zoom: True only in zoomed view
     """
     base = prefer_ticks_from if prefer_ticks_from is not None else arr
+
+    # Percent metrics keep fixed 0–100 %
     if "P(Hs" in label or "Operability" in label:
         return pct_shading(), pct_ticks(), pct_ticks()
-    elif label.startswith("Mean Tp"):
-        ticks = tp_ticks(1.0, np.nanmin(base), np.nanmax(base))
-        return tp_shading(base), ticks, ticks
-    elif is_hs_quantity(label):
-        ticks = hs_ticks(0.5, np.nanmin(base), np.nanmax(base))
-        return hs_shading(base), ticks, ticks
-    else:
-        lev = auto_levels(base, levels_generic)
-        return lev, lev, None
+
+    # Tp metrics (Mean Tp)
+    if label.startswith("Mean Tp"):
+        if zoom:
+            # Denser contours in zoomed view
+            levels = np.arange(np.nanmin(base), np.nanmax(base) + 0.5, 0.5)
+            ticks = levels
+            return levels, ticks, ticks
+        else:
+            ticks = tp_ticks(1.0, np.nanmin(base), np.nanmax(base))
+            return tp_shading(base), ticks, ticks
+
+    # Hs-based metrics (Mean Hs, Hs P50/P90/P95)
+    if is_hs_quantity(label):
+        if zoom:
+            # 0.2 m contour spacing in zoom
+            levels = np.arange(np.nanmin(base), np.nanmax(base) + 0.2, 0.2)
+            ticks = np.arange(
+                math.floor(np.nanmin(base)/0.2)*0.2,
+                math.ceil(np.nanmax(base)/0.2)*0.2 + 0.001,
+                0.2
+            )
+            return levels, ticks, ticks
+        else:
+            ticks = hs_ticks(0.5, np.nanmin(base), np.nanmax(base))
+            return hs_shading(base), ticks, ticks
+
+    # Fallback for any other field
+    lev = auto_levels(base, levels_generic)
+    return lev, lev, None
 
 is_percent_metric = ("P(Hs" in label) or ("Operability" in label)
 
@@ -327,9 +365,11 @@ else:
     ticks_base = np.clip(field2d, None, hi_global)
 
 arr_plot = np.clip(field2d, None, hi_use)
+
 filled_levels, contour_levels, cbar_ticks = prep_levels(
-    arr_plot, label, prefer_ticks_from=ticks_base
+    arr_plot, label, prefer_ticks_from=ticks_base, zoom=zoom_ns
 )
+
 cmap_use = base_cmap + "_r" if "Operability" in label else base_cmap
 
 # -----------------------------
