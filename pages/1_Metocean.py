@@ -577,13 +577,16 @@ def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
     if use_zoom:
         draw_pois(ax, POIS)
 
-    # --- Metocean grid points (gray dots at all grid centers) ---
-    if use_zoom and show_grid_points:
+    # --- Metocean grid points (gray dots on BOTH global and zoom) ---
+    if show_grid_points:
         Lon2D, Lat2D = np.meshgrid(lon_c, lat_c)
+
         ax.scatter(
             Lon2D.ravel(),
             Lat2D.ravel(),
-            s=6, color="gray", alpha=0.6,
+            s=6,
+            color="gray",
+            alpha=0.6,
             transform=ccrs.PlateCarree(),
             zorder=3
         )
