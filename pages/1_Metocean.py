@@ -1,32 +1,34 @@
-# 01_Metocean.py — Metocean Explorer (3° grid)
-# ----------------------------------------------------------
-# Features:
+# 01_Metocean.py — Metocean Explorer (hybrid: 3° global + 0.5° zoom)
+# -------------------------------------------------------------------
 # • Global map: PlateCarree (fixed)
-# • Zoomed map: PlateCarree by default, selector for Mercator/Lambert
-# • Colorbar/ticks adapt to zoomed region for Hs/Tp metrics
-# • Percent metrics stay 0–100 %
-# • 110m features globally (speed), 10m when zoomed (detail)
-# • North Sea Points of Interest (1–10) visible only when zoomed
-# ----------------------------------------------------------
+# • Zoomed map: PlateCarree by default; selector for Mercator / Lambert
+# • Hybrid data loading:
+#       - Global view → metocean_monthclim.nc (3° grid)
+#       - Zoomed view → metocean_scatter_050deg_NS_monthclim.nc (0.5°)
+# • Zoomed Hs styling: filled every 0.1 m, contour lines every 0.2 m
+# • Zoomed Tp styling: contour lines every 0.5 s
+# • % metrics fixed 0–100 %
+# • Coasts: 110m globally (speed), 10m zoomed (detail)
+# • POIs (1–10) with names on zoomed map only
+# • NEW: Optional per‑Tp Hs limit curve applied to BOTH Operability and P(Hs>…)
+# -------------------------------------------------------------------
 
 import math
+import os
 import numpy as np
+import pandas as pd
 import xarray as xr
 import streamlit as st
 import matplotlib.pyplot as plt
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
-import os
 from matplotlib import patheffects
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# GLOBAL 3° dataset (unchanged)
-GLOBAL_DATA_PATH = os.path.join(BASE_DIR, "..", "metocean_monthclim.nc")
-
-# REGIONAL 0.5° dataset (new)
-REGIONAL_DATA_PATH = os.path.join(BASE_DIR, "..", "metocean_scatter_050deg_NS_monthclim.nc")
-
+# Data sources
+GLOBAL_DATA_PATH   = os.path.join(BASE_DIR, "..", "metocean_monthclim.nc")                      # 3°
+REGIONAL_DATA_PATH = os.path.join(BASE_DIR, "..", "metocean_scatter_050deg_NS_monthclim.nc")    # 0.5°
 
 # -----------------------------
 # Page setup
@@ -63,7 +65,7 @@ def to_sorted_lon_lat(field2d, lat_c, lon_edges):
     lon_inv = np.argsort(lon_sort_idx)
     return field2d_sorted, lat_c, lon_sorted, flip_lat, lon_sort_idx, lon_inv
 
-def is_hs_quantity(label):
+def is_hs_quantity(label: str) -> bool:
     if "%" in label:
         return False
     return "hs" in label.lower()
@@ -108,11 +110,9 @@ def normalize_pdf(prob):
 def percentile_from_cdf(cdf, centers, q):
     idx_hi = (cdf >= q).argmax(dim="hs_bin")
     idx_lo = xr.where(idx_hi > 0, idx_hi - 1, 0)
-    c_lo = cdf.isel(hs_bin=idx_lo)
-    c_hi = cdf.isel(hs_bin=idx_hi)
+    c_lo = cdf.isel(hs_bin=idx_lo); c_hi = cdf.isel(hs_bin=idx_hi)
     cen = xr.DataArray(centers, dims=["hs_bin"])
-    h_lo = cen.isel(hs_bin=idx_lo)
-    h_hi = cen.isel(hs_bin=idx_hi)
+    h_lo = cen.isel(hs_bin=idx_lo); h_hi = cen.isel(hs_bin=idx_hi)
     denom = xr.where((c_hi - c_lo) > 0, c_hi - c_lo, 1)
     w = (q - c_lo)/denom
     return h_lo + w*(h_hi - h_lo)
@@ -122,7 +122,7 @@ def percentile_from_cdf(cdf, centers, q):
 # -----------------------------
 with st.sidebar:
     st.subheader("Data")
-    st.caption("Using dataset: metocean_monthclim.nc")
+    st.caption("Global: metocean_monthclim.nc (3°)  •  Zoom: metocean_scatter_050deg_NS_monthclim.nc (0.5°)")
 
     st.subheader("Aggregation")
     agg = st.radio("Use:", ["By month","Annual"], horizontal=True)
@@ -133,6 +133,15 @@ with st.sidebar:
 
     st.subheader("Statistic")
     Hcrit = st.number_input("Hs threshold (m)", 0.1, 15.0, 2.5, step=0.1)
+
+    # NEW: threshold mode — single Hcrit vs per-Tp curve
+    threshold_mode = st.radio(
+        "Threshold mode",
+        ["Single Hcrit", "Hs limit per Tp (table)"],
+        index=0,
+        help="Use one constant Hcrit or define a custom Hs limit for each Tp bin."
+    )
+
     stat = st.selectbox(
         "Statistic:",
         [
@@ -164,7 +173,7 @@ with st.sidebar:
 # Fixed settings
 # -----------------------------
 # lon_min, lon_max, lat_min, lat_max
-ZOOM_EXTENT = [-13, 35, 52, 76]   # up to 72°N; west ~13°W; east 35°E
+ZOOM_EXTENT = [-13, 35, 52, 76]
 base_cmap = "turbo"
 levels_generic = 50
 clip_pct_robust = 99.6  # robust cap for shading
@@ -186,16 +195,9 @@ POIS = [
 ]
 
 # -----------------------------
-# Load dataset
+# Load dataset (hybrid)
 # -----------------------------
-
-# Hybrid data loading:
-# - Global → use 3° file
-# - Zoomed → use 0.5° file
-if zoom_ns:
-    ds = load_metocean(REGIONAL_DATA_PATH)
-else:
-    ds = load_metocean(GLOBAL_DATA_PATH)
+ds = load_metocean(REGIONAL_DATA_PATH if zoom_ns else GLOBAL_DATA_PATH)
 
 for k in ["prob","hs_edges","tp_edges","lat3_edges","lon3_edges"]:
     if k not in ds:
@@ -226,7 +228,34 @@ else:
     title_suffix = " — Annual"
 
 _tot_before = prob.sum(dim=("hs_bin","tp_bin"))
-prob = normalize_pdf(prob)
+prob = normalize_pdf(prob)  # dims: hs_bin, tp_bin, lat3_bin, lon3_bin
+
+# -----------------------------
+# (NEW) Per‑Tp Hs limit table & 2D masks
+# -----------------------------
+def get_per_tp_limits_ui(tp_centers, default_val: float):
+    """Editable table of Hs limits per Tp. Persists in session_state."""
+    key = "hs_per_tp_limits"
+    # Initialize or reset if length changed (different dataset)
+    if (key not in st.session_state) or (len(st.session_state[key]) != len(tp_centers)):
+        st.session_state[key] = [default_val] * len(tp_centers)
+
+    st.subheader("Hs limit per Tp")
+    df = pd.DataFrame({"Tp (s)": tp_centers, "Hs_limit (m)": st.session_state[key]})
+    edited = st.data_editor(df, num_rows="fixed", use_container_width=True)
+    st.session_state[key] = edited["Hs_limit (m)"].tolist()
+
+    return np.array(st.session_state[key], dtype=float)
+
+# Build per‑Tp limits (if mode selected)
+if threshold_mode == "Hs limit per Tp (table)":
+    hs_limit_curve = get_per_tp_limits_ui(tp_c, Hcrit)  # array len = tp_bins
+else:
+    hs_limit_curve = None  # signals single‑Hcrit mode
+
+# Pre-broadcast helpers for 2D logical masks
+Hs_1D = xr.DataArray(hs_c, dims=["hs_bin"])
+Tp_limit_1D = None if hs_limit_curve is None else xr.DataArray(hs_limit_curve, dims=["tp_bin"])
 
 # -----------------------------
 # Compute statistics
@@ -243,9 +272,22 @@ hs_p50 = percentile_from_cdf(hs_cdf, hs_c, 0.50)
 hs_p90 = percentile_from_cdf(hs_cdf, hs_c, 0.90)
 hs_p95 = percentile_from_cdf(hs_cdf, hs_c, 0.95)
 
-mask = xr.DataArray((hs_c > Hcrit).astype(float), dims=["hs_bin"])
-p_exceed = (hs_pdf * mask).sum(dim="hs_bin")
-p_below = 1 - p_exceed
+# --- Exceedance / Operability with per‑Tp support ---
+if hs_limit_curve is None:
+    # Single Hcrit (legacy)
+    mask_exceed_1d = xr.DataArray((hs_c > Hcrit).astype(float), dims=["hs_bin"])
+    p_exceed = (hs_pdf * mask_exceed_1d).sum(dim="hs_bin") * 100.0
+    p_oper   = 100.0 - p_exceed
+else:
+    # Per-Tp: build 2D masks on (hs_bin, tp_bin)
+    Hs2D = Hs_1D.broadcast_like(prob)                    # hs x tp x lat x lon
+    HsLim2D = Tp_limit_1D.broadcast_like(prob)           # hs x tp x lat x lon
+
+    mask_exceed_2d = (Hs2D >  HsLim2D).astype(float)
+    mask_oper_2d   = (Hs2D <= HsLim2D).astype(float)
+
+    p_exceed = (prob * mask_exceed_2d).sum(dim=("hs_bin","tp_bin")) * 100.0
+    p_oper   = (prob * mask_oper_2d  ).sum(dim=("hs_bin","tp_bin")) * 100.0
 
 # -----------------------------
 # Select final field
@@ -253,24 +295,36 @@ p_below = 1 - p_exceed
 if stat == "Mean Hs (m)":
     field = mean_hs
     label = "Mean Hs (m)" + title_suffix
+
 elif stat == "Mean Tp (s)":
     field = mean_tp
     label = "Mean Tp (s)" + title_suffix
+
 elif stat == "Hs P50 (m)":
     field = hs_p50
     label = "Hs P50 (m)" + title_suffix
+
 elif stat == "Hs P90 (m)":
     field = hs_p90
     label = "Hs P90 (m)" + title_suffix
+
 elif stat == "Hs P95 (m)":
     field = hs_p95
     label = "Hs P95 (m)" + title_suffix
+
 elif stat.startswith("P(Hs"):
-    field = 100 * p_exceed
-    label = f"P(Hs > {Hcrit:.1f} m) (%)" + title_suffix
+    field = p_exceed
+    if hs_limit_curve is None:
+        label = f"P(Hs > {Hcrit:.1f} m) (%)" + title_suffix
+    else:
+        label = "P(Hs > Hs_limit(Tp)) (%)" + title_suffix
+
 else:
-    field = 100 * p_below
-    label = f"Operability (% time Hs ≤ {Hcrit:.1f} m)" + title_suffix
+    field = p_oper
+    if hs_limit_curve is None:
+        label = f"Operability (% time Hs ≤ {Hcrit:.1f} m)" + title_suffix
+    else:
+        label = "Operability (% time Hs ≤ Hs_limit(Tp))" + title_suffix
 
 # -----------------------------
 # Prepare 2D field (sorted lon/lat)
@@ -305,39 +359,52 @@ def region_slice(arr2d, lons, lats, extent):
         return arr2d  # fallback
     return arr2d[np.ix_(i, j)]
 
-def prep_levels(arr, label, prefer_ticks_from=None, zoom=False):
-    base = prefer_ticks_from if prefer_ticks_from is not None else arr
+def safe_minmax(a):
+    vmin = np.nanmin(a); vmax = np.nanmax(a)
+    if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin == vmax:
+        return 0.0, 1.0
+    return float(vmin), float(vmax)
 
-    # Percent metrics unchanged
+def prep_levels(arr, label, prefer_ticks_from=None, zoom=False):
+    """
+    - prefer_ticks_from: array used for deriving ticks (zoomed subset)
+    - zoom: True only for zoomed view
+    Returns: (filled_levels, contour_levels, colorbar_ticks)
+    """
+    base = prefer_ticks_from if prefer_ticks_from is not None else arr
+    vmin, vmax = safe_minmax(base)
+
+    # Percent metrics: fixed 0–100
     if "P(Hs" in label or "Operability" in label:
         return pct_shading(), pct_ticks(), pct_ticks()
 
-    # Tp metrics
+    # Tp metrics (Mean Tp)
     if label.startswith("Mean Tp"):
         if zoom:
-            # Zoomed contour spacing 0.5 s
-            levels = np.arange(np.nanmin(base), np.nanmax(base) + 0.5, 0.5)
-            ticks = levels
-            return levels, ticks, ticks
+            contours = np.arange(math.floor(vmin/0.5)*0.5, math.ceil(vmax/0.5)*0.5 + 1e-9, 0.5)
+            filled = tp_shading(base)
+            ticks = contours
+            return filled, contours, ticks
         else:
-            ticks = tp_ticks(1.0, np.nanmin(base), np.nanmax(base))
+            ticks = tp_ticks(1.0, vmin, vmax)
             return tp_shading(base), ticks, ticks
 
-    # Hs metrics
+    # Hs-based metrics (Mean Hs, Hs PXX)
     if is_hs_quantity(label):
         if zoom:
-            # Zoomed contour spacing 0.2 m
-            levels = np.arange(np.nanmin(base), np.nanmax(base) + 0.2, 0.2)
-            ticks = levels
-            return levels, ticks, ticks
+            # Filled colors every 0.1 m
+            filled = np.arange(math.floor(vmin/0.1)*0.1, math.ceil(vmax/0.1)*0.1 + 1e-9, 0.1)
+            # Contour lines every 0.2 m
+            contours = np.arange(math.floor(vmin/0.2)*0.2, math.ceil(vmax/0.2)*0.2 + 1e-9, 0.2)
+            ticks = contours
+            return filled, contours, ticks
         else:
-            ticks = hs_ticks(0.5, np.nanmin(base), np.nanmax(base))
+            ticks = hs_ticks(0.5, vmin, vmax)
             return hs_shading(base), ticks, ticks
 
-    # fallback
+    # Fallback
     lev = auto_levels(base, levels_generic)
     return lev, lev, None
-
 
 is_percent_metric = ("P(Hs" in label) or ("Operability" in label)
 
@@ -347,7 +414,7 @@ if is_percent_metric:
 else:
     hi_global = np.nanpercentile(field2d, clip_pct_robust)
 
-# When zoomed: adapt scale to zoomed region (except % metrics)
+# When zoomed: adapt color range to zoomed region (except % metrics)
 if zoom_ns and not is_percent_metric:
     region = region_slice(field2d, lonp, latp, ZOOM_EXTENT)
     hi_zoom = np.nanpercentile(region, clip_pct_robust)
@@ -369,57 +436,37 @@ cmap_use = base_cmap + "_r" if "Operability" in label else base_cmap
 # POI drawer
 # -----------------------------
 def draw_pois(ax, pois):
-    """
-    Draws numbered markers and labels 'Nr Name' for POIs on the zoomed map.
-    - ax: matplotlib/cartopy axes
-    - pois: list of dicts with keys: name, nr, lat, lon
-    """
-    # Base marker style
+    """Draw numbered markers and 'Nr Name' labels with a subtle white halo."""
+    # markers
     lons = [p["lon"] for p in pois]
     lats = [p["lat"] for p in pois]
-    ax.scatter(
-        lons, lats, s=28, c="black", marker="o",
-        transform=ccrs.PlateCarree(), zorder=20
-    )
+    ax.scatter(lons, lats, s=28, c="black", marker="o",
+               transform=ccrs.PlateCarree(), zorder=20)
 
-    # Slight per-point offsets (deg) to reduce overlaps in dense clusters
-    # Tune here if any labels collide on your screen
+    # per-point offsets (deg) to reduce overlaps
     offsets = {
-        # nr: (dx, dy)
-         1: ( 0.12,  0.10),  # Ekofisk
-         2: ( 0.12,  0.10),  # Ula
-         3: ( 0.14,  0.10),  # Sleipner
-         4: ( 0.14,  0.12),  # Alvheim
-         5: ( 0.14,  0.12),  # Oseberg
-         6: ( 0.12,  0.12),  # Knarr
-         7: ( 0.12,  0.12),  # Ormen Lange
-         8: ( 0.12,  0.12),  # Skarv
-         9: ( 0.12,  0.12),  # Aasta Hansteen
-        10: ( 0.14,  0.12),  # Johan Castberg
+        1:(0.12,0.10), 2:(0.12,0.10), 3:(0.14,0.10), 4:(0.14,0.12), 5:(0.14,0.12),
+        6:(0.12,0.12), 7:(0.12,0.12), 8:(0.12,0.12), 9:(0.12,0.12), 10:(0.14,0.12)
     }
-
-    # Text style: small font with white halo for readability
     halo = [patheffects.withStroke(linewidth=2.2, foreground="white", alpha=0.9)]
     for p in pois:
         dx, dy = offsets.get(p["nr"], (0.12, 0.12))
-        ax.text(
-            p["lon"] + dx, p["lat"] + dy,
-            f'{p["nr"]} {p["name"]}',
-            transform=ccrs.PlateCarree(),
-            fontsize=7, color="black", zorder=21,
-            path_effects=halo
-        )
+        ax.text(p["lon"] + dx, p["lat"] + dy, f'{p["nr"]} {p["name"]}',
+                transform=ccrs.PlateCarree(), fontsize=7, color="black",
+                zorder=21, path_effects=halo)
+
 # -----------------------------
 # Plot function
 # -----------------------------
 def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
              use_zoom: bool, zoom_proj):
-    # Axes projection: PlateCarree (global) or selected projection (zoom)
-    ax_proj = (zoom_proj if use_zoom else ccrs.PlateCarree())
+    # Axes projection
+    ax_proj = zoom_proj if use_zoom else ccrs.PlateCarree()
 
-    fig = plt.figure(figsize=(15, 6), dpi=150)
+    fig = plt.figure(figsize=(15, 6), dpi=(200 if use_zoom else 150))
     ax = plt.axes(projection=ax_proj)
 
+    # filled colors
     cf = ax.contourf(
         lon_c, lat_c, arr2d,
         levels=filled,
@@ -428,51 +475,63 @@ def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
         transform=ccrs.PlateCarree(),  # data is lon/lat
         zorder=1
     )
+
+    # contour lines
     try:
         cs = ax.contour(
             lon_c, lat_c, arr2d,
             levels=contours,
             colors="black",
-            linewidths=0.4,
+            linewidths=0.45 if use_zoom else 0.4,
             transform=ccrs.PlateCarree(),
             zorder=2
         )
-        
+
+        # force renderer to prepare paths (helps clabel density)
+        ax.figure.canvas.draw()
+
+        # denser labels when zoomed
         ax.clabel(
             cs,
             fontsize=6,
             inline=True,
-            inline_spacing=1,   # << closer contour labels
-            fmt="%g"
+            inline_spacing=(1 if use_zoom else 6),
+            fmt="%g",
+            manual=False,
+            rightside_up=True
         )
-
     except Exception:
         pass
 
-    # Feature detail: 10m when zoomed, 110m when global
+    # feature detail
     feature_scale = "10m" if use_zoom else "110m"
-    ax.add_feature(cfeature.LAND.with_scale(feature_scale), facecolor="lightgray", edgecolor="none", zorder=10)
-    ax.add_feature(cfeature.COASTLINE.with_scale(feature_scale), linewidth=0.7 if use_zoom else 0.4, zorder=11)
-    ax.add_feature(cfeature.BORDERS.with_scale(feature_scale), linewidth=0.3 if use_zoom else 0.2, zorder=12)
+    ax.add_feature(cfeature.LAND.with_scale(feature_scale),
+                   facecolor="lightgray", edgecolor="none", zorder=10)
+    ax.add_feature(cfeature.COASTLINE.with_scale(feature_scale),
+                   linewidth=0.7 if use_zoom else 0.4, zorder=11)
+    ax.add_feature(cfeature.BORDERS.with_scale(feature_scale),
+                   linewidth=0.3 if use_zoom else 0.2, zorder=12)
 
-    # Extent
+    # extent
     if use_zoom:
         ax.set_extent(ZOOM_EXTENT, crs=ccrs.PlateCarree())
     else:
         ax.set_global()
 
-    # Points of interest: only on zoomed map
+    # POIs only on zoomed map
     if use_zoom:
         draw_pois(ax, POIS)
 
+    # colorbar
     cb = plt.colorbar(cf, ax=ax, shrink=0.75, aspect=30, pad=0.01, ticks=ticks)
     cb.set_label(title)
     cb.ax.tick_params(labelsize=8)
     ax.set_title(title)
+
     plt.subplots_adjust(left=0.02, right=0.97, top=0.93, bottom=0.06)
     st.pyplot(fig, use_container_width=True)
 
-    # Compact legend (Nr → Name) below the figure when zoomed
+    # compact legend (zoom only)
     if use_zoom:
         legend_items = ", ".join([f'{p["nr"]}: {p["name"]}' for p in POIS])
         st.caption(f"**Points of interest (Nr → Name):** {legend_items}")
@@ -500,8 +559,11 @@ if show_debug:
         float(_tot_before.min()),
         float(_tot_before.max())
     )
+    src = REGIONAL_DATA_PATH if zoom_ns else GLOBAL_DATA_PATH
     st.write(
         "Color cap (hi_use):", float(hi_use),
         "| Zoomed:", bool(zoom_ns),
-        "| Zoom projection:", zoom_proj_name
+        "| Zoom projection:", zoom_proj_name,
+        "| Source:", os.path.basename(src),
+        "| Threshold mode:", threshold_mode
     )
