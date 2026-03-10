@@ -437,7 +437,15 @@ def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
             transform=ccrs.PlateCarree(),
             zorder=2
         )
-        ax.clabel(cs, fontsize=6, inline=True, fmt="%g")
+        
+        ax.clabel(
+            cs,
+            fontsize=6,
+            inline=True,
+            inline_spacing=1,   # << closer contour labels
+            fmt="%g"
+        )
+
     except Exception:
         pass
 
