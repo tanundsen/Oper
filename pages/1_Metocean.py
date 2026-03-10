@@ -330,18 +330,31 @@ def prep_levels(arr, label, prefer_ticks_from=None, zoom=False):
             ticks = tp_ticks(1.0, vmin, vmax)
             return tp_shading(base), ticks, ticks
 
-    # Hs-based metrics (Mean Hs, Hs PXX)
+    # Hs metrics
     if is_hs_quantity(label):
         if zoom:
-            # Filled colors every 0.1 m
-            filled = np.arange(math.floor(vmin/0.1)*0.1, math.ceil(vmax/0.1)*0.1 + 1e-9, 0.1)
-            # Contour lines every 0.2 m
-            contours = np.arange(math.floor(vmin/0.2)*0.2, math.ceil(vmax/0.2)*0.2 + 1e-9, 0.2)
+
+            vmin = float(np.nanmin(base))
+            vmax = float(np.nanmax(base))
+
+            # filled colors every 0.1 m
+            filled = np.arange(
+                math.floor(vmin/0.1)*0.1,
+                math.ceil(vmax/0.1)*0.1 + 1e-9,
+                0.1
+            )
+
+            # contour lines every 0.2 m
+            contours = np.arange(
+                math.floor(vmin/0.2)*0.2,
+                math.ceil(vmax/0.2)*0.2 + 1e-9,
+                0.2
+            )
+
+            # colorbar ticks follow contours
             ticks = contours
+
             return filled, contours, ticks
-        else:
-            ticks = hs_ticks(0.5, vmin, vmax)
-            return hs_shading(base), ticks, ticks
 
     # Fallback
     lev = auto_levels(base, levels_generic)
