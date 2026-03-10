@@ -243,63 +243,58 @@ if threshold_mode == "Hs limit per Tp (table)":
 
     st.subheader("Hs limit per Tp")
 
-    # ------------- CSV import -------------
+    # ---------- CSV import ----------
     up = st.file_uploader("Import CSV (columns: 'Tp (s)', 'Hs_limit (m)')", type=["csv"])
     if up is not None:
-        try:
-            df_in = pd.read_csv(up)
-        except UnicodeDecodeError:
-            df_in = pd.read_csv(up, encoding="latin-1")
+        df_in = pd.read_csv(up)
 
-        # Flexible column detection
-        def find_col(options, cols):
-            opts = [o.lower().strip() for o in options]
-            for c in cols:
-                if c.lower().strip() in opts:
-                    return c
+        # detect columns (robust)
+        def find_col(candidates, cols):
+            low = [c.lower().strip() for c in cols]
+            for cand in candidates:
+                if cand.lower().strip() in low:
+                    return cols[low.index(cand.lower().strip())]
             return None
 
-        tp_col = find_col(["tp (s)", "tp", "tp_s"], df_in.columns)
-        hs_col = find_col(["hs_limit (m)", "hs limit (m)", "hs_limit", "hs (m)", "hs"], df_in.columns)
+        tp_col = find_col(["tp (s)", "tp"], df_in.columns)
+        hs_col = find_col(["hs_limit (m)", "hs limit (m)", "hs_limit"], df_in.columns)
 
-        if tp_col is None or hs_col is None:
-            st.error("CSV must contain columns 'Tp (s)' and 'Hs_limit (m)'.")
-        else:
-            tp_in = pd.to_numeric(df_in[tp_col], errors="coerce").astype(float).values
-            hs_in = pd.to_numeric(df_in[hs_col], errors="coerce").astype(float).values
+        tp_in = df_in[tp_col].astype(float).values
+        hs_in = df_in[hs_col].astype(float).values
 
-            mask_valid = np.isfinite(tp_in) & np.isfinite(hs_in)
-            tp_in, hs_in = tp_in[mask_valid], hs_in[mask_valid]
-            if tp_in.size < 2:
-                st.error("CSV must provide at least two valid Tp rows.")
-            else:
-                # sort & interpolate onto internal tp_c
-                order = np.argsort(tp_in)
-                tp_in, hs_in = tp_in[order], hs_in[order]
-                hs_interp = np.interp(tp_c, tp_in, hs_in, left=hs_in[0], right=hs_in[-1])
-                hs_interp = np.clip(np.round(hs_interp, 1), 0.0, 15.0)
-                st.session_state[limits_key] = hs_interp.tolist()
-                st.success(f"Imported {tp_in.size} CSV rows and mapped to {len(tp_c)} Tp bins.")
-                st.rerun()
+        # interpolate to internal tp_c grid
+        order = np.argsort(tp_in)
+        tp_in, hs_in = tp_in[order], hs_in[order]
 
-    # ------------- Editable table (old workflow) -------------
+        hs_interp = np.interp(tp_c, tp_in, hs_in)
+        hs_interp = np.clip(np.round(hs_interp, 1), 0.0, 15.0)
+
+        # *** IMPORTANT *** update session state BEFORE drawing table
+        st.session_state["hs_per_tp_limits"] = hs_interp.tolist()
+        st.success("Imported CSV and updated Hs limits.")
+
+    # ---------- ALWAYS draw the table FROM SESSION STATE ----------
     df_limits = pd.DataFrame({
         "Tp (s)": tp_c,
-        "Hs_limit (m)": st.session_state[limits_key]
+        "Hs_limit (m)": st.session_state.get("hs_per_tp_limits", [Hcrit]*len(tp_c))
     })
+
     df_limits = st.data_editor(
-        df_limits, num_rows="fixed", hide_index=True, use_container_width=True,
+        df_limits,
+        num_rows="fixed",
+        hide_index=True,
+        use_container_width=True,
         column_config={
             "Tp (s)": st.column_config.NumberColumn("Tp (s)", disabled=True, format="%.1f"),
-            "Hs_limit (m)": st.column_config.NumberColumn(
-                "Hs_limit (m)", min_value=0.0, max_value=15.0, step=0.1, format="%.1f",
-                help="Edit with spinner/mouse wheel; step = 0.1 m"
-            ),
+            "Hs_limit (m)": st.column_config.NumberColumn("Hs_limit (m)", step=0.1, min_value=0.0, max_value=15.0),
         },
-        key="per_tp_editor_old"
+        key="per_tp_editor"
     )
-    st.session_state[limits_key] = df_limits["Hs_limit (m)"].round(1).tolist()
-    hs_limit_curve = np.array(st.session_state[limits_key], dtype=float)
+
+    # write table edits back to session state
+    st.session_state["hs_per_tp_limits"] = df_limits["Hs_limit (m)"].round(1).tolist()
+
+    hs_limit_curve = np.array(st.session_state["hs_per_tp_limits"])
 
     # ------------- CSV export (current curve) -------------
     templ_buf = StringIO()
