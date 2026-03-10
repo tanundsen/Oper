@@ -305,22 +305,39 @@ def region_slice(arr2d, lons, lats, extent):
         return arr2d  # fallback
     return arr2d[np.ix_(i, j)]
 
-def prep_levels(arr, label, prefer_ticks_from=None):
-    """
-    prefer_ticks_from: array used for tick range (e.g., zoomed subset)
-    """
+def prep_levels(arr, label, prefer_ticks_from=None, zoom=False):
     base = prefer_ticks_from if prefer_ticks_from is not None else arr
+
+    # Percent metrics unchanged
     if "P(Hs" in label or "Operability" in label:
         return pct_shading(), pct_ticks(), pct_ticks()
-    elif label.startswith("Mean Tp"):
-        ticks = tp_ticks(1.0, np.nanmin(base), np.nanmax(base))
-        return tp_shading(base), ticks, ticks
-    elif is_hs_quantity(label):
-        ticks = hs_ticks(0.5, np.nanmin(base), np.nanmax(base))
-        return hs_shading(base), ticks, ticks
-    else:
-        lev = auto_levels(base, levels_generic)
-        return lev, lev, None
+
+    # Tp metrics
+    if label.startswith("Mean Tp"):
+        if zoom:
+            # Zoomed contour spacing 0.5 s
+            levels = np.arange(np.nanmin(base), np.nanmax(base) + 0.5, 0.5)
+            ticks = levels
+            return levels, ticks, ticks
+        else:
+            ticks = tp_ticks(1.0, np.nanmin(base), np.nanmax(base))
+            return tp_shading(base), ticks, ticks
+
+    # Hs metrics
+    if is_hs_quantity(label):
+        if zoom:
+            # Zoomed contour spacing 0.2 m
+            levels = np.arange(np.nanmin(base), np.nanmax(base) + 0.2, 0.2)
+            ticks = levels
+            return levels, ticks, ticks
+        else:
+            ticks = hs_ticks(0.5, np.nanmin(base), np.nanmax(base))
+            return hs_shading(base), ticks, ticks
+
+    # fallback
+    lev = auto_levels(base, levels_generic)
+    return lev, lev, None
+
 
 is_percent_metric = ("P(Hs" in label) or ("Operability" in label)
 
@@ -341,9 +358,11 @@ else:
     ticks_base = np.clip(field2d, None, hi_global)
 
 arr_plot = np.clip(field2d, None, hi_use)
+
 filled_levels, contour_levels, cbar_ticks = prep_levels(
-    arr_plot, label, prefer_ticks_from=ticks_base
+    arr_plot, label, prefer_ticks_from=ticks_base, zoom=zoom_ns
 )
+
 cmap_use = base_cmap + "_r" if "Operability" in label else base_cmap
 
 # -----------------------------
