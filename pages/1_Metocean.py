@@ -23,6 +23,7 @@ import matplotlib.pyplot as plt
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 from matplotlib import patheffects
+import plotly.graph_objects as go
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -256,6 +257,90 @@ else:
 # Pre-broadcast helpers for 2D logical masks
 Hs_1D = xr.DataArray(hs_c, dims=["hs_bin"])
 Tp_limit_1D = None if hs_limit_curve is None else xr.DataArray(hs_limit_curve, dims=["tp_bin"])
+
+
+# ---- Hs-limit per Tp: enhanced editable table + live curve preview (native, no extra deps) ----
+def init_per_tp_limits(default_val: float, tp_centers: np.ndarray):
+    key = "hs_per_tp_limits"
+    if (key not in st.session_state) or (len(st.session_state[key]) != len(tp_centers)):
+        st.session_state[key] = [default_val] * len(tp_centers)
+    return key
+
+if threshold_mode == "Hs limit per Tp (table)":
+    # Initialize state
+    limits_key = init_per_tp_limits(Hcrit, tp_c)
+
+    # Layout: table (left) + curve preview (right)
+    col_tbl, col_plot = st.columns([0.62, 0.38])
+
+    with col_tbl:
+        st.subheader("Hs limit per Tp")
+        # Editable table with numeric constraints and 0.1 m step
+        df_limits = pd.DataFrame({
+            "Tp (s)": tp_c,
+            "Hs_limit (m)": st.session_state[limits_key]
+        })
+
+        df_limits = st.data_editor(
+            df_limits,
+            num_rows="fixed",
+            hide_index=True,
+            use_container_width=True,
+            key="per_tp_editor",
+            column_config={
+                "Tp (s)": st.column_config.NumberColumn(
+                    "Tp (s)", disabled=True, format="%.1f"
+                ),
+                "Hs_limit (m)": st.column_config.NumberColumn(
+                    "Hs_limit (m)",
+                    min_value=0.0, max_value=15.0, step=0.1, format="%.1f",
+                    help="Edit with spinner, mouse wheel, or keyboard; step = 0.1 m"
+                ),
+            }
+        )
+
+        # handy quick tools
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            if st.button("Reset to Hcrit"):
+                st.session_state[limits_key] = [Hcrit] * len(tp_c)
+                st.rerun()
+        with c2:
+            if st.button("Smooth curve"):
+                vals = pd.Series(df_limits["Hs_limit (m)"].values).rolling(3, min_periods=1, center=True).mean().values
+                st.session_state[limits_key] = [float(round(x, 1)) for x in vals]
+                st.rerun()
+        with c3:
+            delta = st.number_input("Nudge all (m)", value=0.0, step=0.1, format="%.1f")
+            if st.button("Apply nudge"):
+                vals = np.clip(df_limits["Hs_limit (m)"].values + float(delta), 0.0, 15.0)
+                st.session_state[limits_key] = [float(round(x, 1)) for x in vals]
+                st.rerun()
+
+    with col_plot:
+        # Live curve preview
+        y = df_limits["Hs_limit (m)"].values.astype(float)
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=tp_c, y=y, mode="lines+markers",
+                                 line=dict(color="#1f77b4", width=2),
+                                 marker=dict(size=6, color="#1f77b4")))
+        fig.update_layout(
+            height=230, margin=dict(l=10, r=10, t=30, b=10),
+            xaxis_title="Tp (s)", yaxis_title="Hs limit (m)",
+            template="plotly_white",
+            xaxis=dict(tickmode="linear", dtick=1),
+            yaxis=dict(range=[0, max(3.0, float(np.nanmax(y)) + 0.5)], dtick=0.5),
+            showlegend=False
+        )
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+    # Persist the edited limits in session state
+    st.session_state[limits_key] = df_limits["Hs_limit (m)"].tolist()
+    hs_limit_curve = np.array(st.session_state[limits_key], dtype=float)
+
+else:
+    hs_limit_curve = None
+
 
 # -----------------------------
 # Compute statistics
