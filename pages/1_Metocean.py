@@ -418,7 +418,7 @@ def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
     # Axes projection
     ax_proj = zoom_proj if use_zoom else ccrs.PlateCarree()
 
-    fig = plt.figure(figsize=(15, 6), dpi=150)
+    fig = plt.figure(figsize=(15, 6),dpi=(200 if use_zoom else 150))
     ax = plt.axes(projection=ax_proj)
 
     # filled colors
@@ -443,14 +443,22 @@ def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
         )
 
         # denser labels when zoomed
+
+        
+        # make matplotlib try harder to place labels
+        ax.figure.canvas.draw()                       # important
+        cs.levels = cs.levels                         # (no-op, but stabilizes the object)
+
+
         ax.clabel(
             cs,
             fontsize=6,
             inline=True,
-            inline_spacing=(1 if use_zoom else 6),
+            inline_spacing=1,
             fmt="%g",
             manual=False
         )
+
     except Exception:
         pass
 
