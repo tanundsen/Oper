@@ -327,7 +327,7 @@ def prep_levels(arr, label, prefer_ticks_from=None, zoom=False):
     if is_hs_quantity(label):
         if zoom:
             # Zoomed contour spacing 0.2 m
-            levels = np.arange(np.nanmin(base), np.nanmax(base) + 0.2, 0.1)
+            levels = np.arange(np.nanmin(base), np.nanmax(base) + 0.2, 0.2)
             ticks = levels
             return levels, ticks, ticks
         else:
