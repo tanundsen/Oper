@@ -20,7 +20,13 @@ import os
 from matplotlib import patheffects
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_PATH = os.path.join(BASE_DIR, "..", "metocean_monthclim.nc")
+
+# GLOBAL 3° dataset (unchanged)
+GLOBAL_DATA_PATH = os.path.join(BASE_DIR, "..", "metocean_monthclim.nc")
+
+# REGIONAL 0.5° dataset (new)
+REGIONAL_DATA_PATH = os.path.join(BASE_DIR, "..", "metocean_scatter_050deg_NS_monthclim.nc")
+
 
 # -----------------------------
 # Page setup
@@ -182,7 +188,15 @@ POIS = [
 # -----------------------------
 # Load dataset
 # -----------------------------
-ds = load_metocean(DATA_PATH)
+
+# Hybrid data loading:
+# - Global → use 3° file
+# - Zoomed → use 0.5° file
+if zoom_ns:
+    ds = load_metocean(REGIONAL_DATA_PATH)
+else:
+    ds = load_metocean(GLOBAL_DATA_PATH)
+
 for k in ["prob","hs_edges","tp_edges","lat3_edges","lon3_edges"]:
     if k not in ds:
         st.error(f"Dataset missing {k}")
