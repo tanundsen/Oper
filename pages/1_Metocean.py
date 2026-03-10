@@ -23,6 +23,7 @@ import matplotlib.pyplot as plt
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 from matplotlib import patheffects
+from io import StringIO
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -229,6 +230,97 @@ else:
 
 _tot_before = prob.sum(dim=("hs_bin","tp_bin"))
 prob = normalize_pdf(prob)  # dims: hs_bin, tp_bin, lat3_bin, lon3_bin
+
+# ---- Hs-limit per Tp: editable table + CSV import/export (old workflow with file support) ----
+def init_per_tp_limits(default_val: float, tp_centers: np.ndarray):
+    key = "hs_per_tp_limits"
+    if (key not in st.session_state) or (len(st.session_state[key]) != len(tp_centers)):
+        st.session_state[key] = [default_val] * len(tp_centers)
+    return key
+
+if threshold_mode == "Hs limit per Tp (table)":
+    limits_key = init_per_tp_limits(Hcrit, tp_c)
+
+    st.subheader("Hs limit per Tp")
+
+    # ------------- CSV import -------------
+    up = st.file_uploader("Import CSV (columns: 'Tp (s)', 'Hs_limit (m)')", type=["csv"])
+    if up is not None:
+        try:
+            df_in = pd.read_csv(up)
+        except UnicodeDecodeError:
+            df_in = pd.read_csv(up, encoding="latin-1")
+
+        # Flexible column detection
+        def find_col(options, cols):
+            opts = [o.lower().strip() for o in options]
+            for c in cols:
+                if c.lower().strip() in opts:
+                    return c
+            return None
+
+        tp_col = find_col(["tp (s)", "tp", "tp_s"], df_in.columns)
+        hs_col = find_col(["hs_limit (m)", "hs limit (m)", "hs_limit", "hs (m)", "hs"], df_in.columns)
+
+        if tp_col is None or hs_col is None:
+            st.error("CSV must contain columns 'Tp (s)' and 'Hs_limit (m)'.")
+        else:
+            tp_in = pd.to_numeric(df_in[tp_col], errors="coerce").astype(float).values
+            hs_in = pd.to_numeric(df_in[hs_col], errors="coerce").astype(float).values
+
+            mask_valid = np.isfinite(tp_in) & np.isfinite(hs_in)
+            tp_in, hs_in = tp_in[mask_valid], hs_in[mask_valid]
+            if tp_in.size < 2:
+                st.error("CSV must provide at least two valid Tp rows.")
+            else:
+                # sort & interpolate onto internal tp_c
+                order = np.argsort(tp_in)
+                tp_in, hs_in = tp_in[order], hs_in[order]
+                hs_interp = np.interp(tp_c, tp_in, hs_in, left=hs_in[0], right=hs_in[-1])
+                hs_interp = np.clip(np.round(hs_interp, 1), 0.0, 15.0)
+                st.session_state[limits_key] = hs_interp.tolist()
+                st.success(f"Imported {tp_in.size} CSV rows and mapped to {len(tp_c)} Tp bins.")
+                st.rerun()
+
+    # ------------- Editable table (old workflow) -------------
+    df_limits = pd.DataFrame({
+        "Tp (s)": tp_c,
+        "Hs_limit (m)": st.session_state[limits_key]
+    })
+    df_limits = st.data_editor(
+        df_limits, num_rows="fixed", hide_index=True, use_container_width=True,
+        column_config={
+            "Tp (s)": st.column_config.NumberColumn("Tp (s)", disabled=True, format="%.1f"),
+            "Hs_limit (m)": st.column_config.NumberColumn(
+                "Hs_limit (m)", min_value=0.0, max_value=15.0, step=0.1, format="%.1f",
+                help="Edit with spinner/mouse wheel; step = 0.1 m"
+            ),
+        },
+        key="per_tp_editor_old"
+    )
+    st.session_state[limits_key] = df_limits["Hs_limit (m)"].round(1).tolist()
+    hs_limit_curve = np.array(st.session_state[limits_key], dtype=float)
+
+    # ------------- CSV export (current curve) -------------
+    templ_buf = StringIO()
+    pd.DataFrame({"Tp (s)": tp_c, "Hs_limit (m)": [Hcrit]*len(tp_c)}).to_csv(templ_buf, index=False)
+    st.download_button("Download CSV template (flat Hcrit)", templ_buf.getvalue(),
+                       file_name="hs_limits_template.csv", mime="text/csv")
+
+    ex_vals = np.clip(0.8 + 0.1*(tp_c - float(tp_c.min()))/2.0, 0.6, 3.5)  # simple ramp example
+    ex_buf = StringIO()
+    pd.DataFrame({"Tp (s)": tp_c, "Hs_limit (m)": np.round(ex_vals, 1)}).to_csv(ex_buf, index=False)
+    st.download_button("Download CSV example (ramped)", ex_buf.getvalue(),
+                       file_name="hs_limits_example.csv", mime="text/csv")
+
+    cur_buf = StringIO()
+    pd.DataFrame({"Tp (s)": tp_c, "Hs_limit (m)": st.session_state[limits_key]}).to_csv(cur_buf, index=False)
+    st.download_button("Download current limits", cur_buf.getvalue(),
+                       file_name="hs_limits_current.csv", mime="text/csv")
+
+else:
+    hs_limit_curve = None
+
 
 # -----------------------------
 # (NEW) Per‑Tp Hs limit table & 2D masks
