@@ -5,16 +5,21 @@
 # • Hybrid data loading:
 #       - Global view → metocean_monthclim.nc (3° grid)
 #       - Zoomed view → metocean_scatter_050deg_NS_monthclim.nc (0.5°)
-# • Zoomed Hs styling: filled every 0.1 m, contour lines every 0.2 m
+# • Zoomed Hs styling: filled every 0.1 m, contour lines every 0.2 m (inline_spacing=1)
 # • Zoomed Tp styling: contour lines every 0.5 s
 # • % metrics fixed 0–100 %
 # • Coasts: 110m globally (speed), 10m zoomed (detail)
 # • POIs (1–10) with names on zoomed map only
-# • NEW: Optional per‑Tp Hs limit curve applied to BOTH Operability and P(Hs>…)
+# • NEW:
+#   - Metocean grid points overlay (zoom only), using np.meshgrid → no size error
+#   - Per‑Tp Hs limit curve via CSV import + graph preview; reference table under map
+#   - Curve applied to BOTH P(Hs > …) and Operability
 # -------------------------------------------------------------------
 
 import math
 import os
+from io import StringIO
+
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -22,9 +27,8 @@ import streamlit as st
 import matplotlib.pyplot as plt
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
-from matplotlib import patheffects
-from io import StringIO
 import plotly.graph_objects as go
+from matplotlib import patheffects
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -136,12 +140,12 @@ with st.sidebar:
     st.subheader("Statistic")
     Hcrit = st.number_input("Hs threshold (m)", 0.1, 15.0, 2.5, step=0.1)
 
-    # NEW: threshold mode — single Hcrit vs per-Tp curve
+    # Threshold mode — single Hcrit vs per-Tp CSV curve
     threshold_mode = st.radio(
         "Threshold mode",
-        ["Single Hcrit", "Hs limit per Tp (table)"],
+        ["Single Hcrit", "Hs limit per Tp (CSV + graph)"],
         index=0,
-        help="Use one constant Hcrit or define a custom Hs limit for each Tp bin."
+        help="Use one constant Hcrit or import a CSV with one Hs limit per Tp bin."
     )
 
     stat = st.selectbox(
@@ -159,6 +163,7 @@ with st.sidebar:
 
     st.subheader("View")
     zoom_ns = st.checkbox("North Sea zoom", value=False)
+    show_grid_points = st.checkbox("Show metocean grid points (zoom)", value=True)
 
     # Projection selector for zoomed view (default PlateCarree)
     zoom_proj_name = st.selectbox(
@@ -233,20 +238,19 @@ _tot_before = prob.sum(dim=("hs_bin","tp_bin"))
 prob = normalize_pdf(prob)  # dims: hs_bin, tp_bin, lat3_bin, lon3_bin
 
 # -----------------------------
-# Per‑Tp Hs limit: CSV import + Graph preview (table moved below map)
+# Per‑Tp Hs limit: CSV import + Graph (table will be shown under map)
 # -----------------------------
-
 def init_per_tp_limits(default_val: float, tp_centers: np.ndarray):
     key = "hs_per_tp_limits"
     if (key not in st.session_state) or (len(st.session_state[key]) != len(tp_centers)):
         st.session_state[key] = [default_val] * len(tp_centers)
     return key
 
-if threshold_mode == "Hs limit per Tp (table)":
+if threshold_mode == "Hs limit per Tp (CSV + graph)":
     limits_key = init_per_tp_limits(Hcrit, tp_c)
 
     st.subheader("Hs limit per Tp — curve")
-    # --- CSV import (optional) ---
+    # CSV import (optional)
     up = st.file_uploader("Import CSV (columns: 'Tp (s)', 'Hs_limit (m)')", type=["csv"], key="hs_csv_upload")
     if up is not None:
         try:
@@ -279,6 +283,7 @@ if threshold_mode == "Hs limit per Tp (table)":
                 tp_in, hs_in = tp_in[order], hs_in[order]
                 hs_interp = np.interp(tp_c, tp_in, hs_in, left=hs_in[0], right=hs_in[-1])
                 hs_interp = np.clip(np.round(hs_interp, 1), 0.0, 15.0)
+                # Update session state BEFORE any table render
                 st.session_state[limits_key] = hs_interp.tolist()
                 st.success(f"Imported {tp_in.size} rows → mapped to {len(tp_c)} Tp bins.")
 
@@ -287,7 +292,7 @@ if threshold_mode == "Hs limit per Tp (table)":
     hs_limit_curve = np.clip(np.round(hs_limit_curve, 1), 0.0, 15.0)
     st.session_state[limits_key] = hs_limit_curve.tolist()
 
-    # Graph preview (the only thing shown here)
+    # Graph preview (only control shown here)
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=tp_c, y=hs_limit_curve, mode="lines+markers",
@@ -302,40 +307,11 @@ if threshold_mode == "Hs limit per Tp (table)":
         showlegend=False
     )
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-
 else:
     hs_limit_curve = None
 
-
 # -----------------------------
-# (NEW) Per‑Tp Hs limit table & 2D masks
-# -----------------------------
-def get_per_tp_limits_ui(tp_centers, default_val: float):
-    """Editable table of Hs limits per Tp. Persists in session_state."""
-    key = "hs_per_tp_limits"
-    # Initialize or reset if length changed (different dataset)
-    if (key not in st.session_state) or (len(st.session_state[key]) != len(tp_centers)):
-        st.session_state[key] = [default_val] * len(tp_centers)
-
-    st.subheader("Hs limit per Tp")
-    df = pd.DataFrame({"Tp (s)": tp_centers, "Hs_limit (m)": st.session_state[key]})
-    edited = st.data_editor(df, num_rows="fixed", use_container_width=True)
-    st.session_state[key] = edited["Hs_limit (m)"].tolist()
-
-    return np.array(st.session_state[key], dtype=float)
-
-# Build per‑Tp limits (if mode selected)
-if threshold_mode == "Hs limit per Tp (table)":
-    hs_limit_curve = get_per_tp_limits_ui(tp_c, Hcrit)  # array len = tp_bins
-else:
-    hs_limit_curve = None  # signals single‑Hcrit mode
-
-# Pre-broadcast helpers for 2D logical masks
-Hs_1D = xr.DataArray(hs_c, dims=["hs_bin"])
-Tp_limit_1D = None if hs_limit_curve is None else xr.DataArray(hs_limit_curve, dims=["tp_bin"])
-
-# -----------------------------
-# Compute statistics
+# Compute statistics (means, percentiles, thresholds)
 # -----------------------------
 hs_w = xr.DataArray(hs_c, dims=["hs_bin"])
 tp_w = xr.DataArray(tp_c, dims=["tp_bin"])
@@ -357,6 +333,8 @@ if hs_limit_curve is None:
     p_oper   = 100.0 - p_exceed
 else:
     # Per-Tp: build 2D masks on (hs_bin, tp_bin)
+    Hs_1D = xr.DataArray(hs_c, dims=["hs_bin"])
+    Tp_limit_1D = xr.DataArray(hs_limit_curve, dims=["tp_bin"])
     Hs2D = Hs_1D.broadcast_like(prob)                    # hs x tp x lat x lon
     HsLim2D = Tp_limit_1D.broadcast_like(prob)           # hs x tp x lat x lon
 
@@ -564,10 +542,10 @@ def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
             zorder=2
         )
 
-        # force renderer to prepare paths (helps clabel density)
+        # prepare renderer (helps clabel density)
         ax.figure.canvas.draw()
 
-        # denser labels when zoomed
+        # labels: dense when zoomed
         ax.clabel(
             cs,
             fontsize=6,
@@ -599,14 +577,17 @@ def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
     if use_zoom:
         draw_pois(ax, POIS)
 
-    # --- Metocean grid points (small gray dots) ---
-    ax.scatter(
-        lon_c, lat_c,
-        s=5, color="gray", alpha=0.6,
-        transform=ccrs.PlateCarree(),
-        zorder=3,
-        label="Metocean grid"
-    )
+    # --- Metocean grid points (gray dots at all grid centers) ---
+    if use_zoom and show_grid_points:
+        Lon2D, Lat2D = np.meshgrid(lon_c, lat_c)
+        ax.scatter(
+            Lon2D.ravel(),
+            Lat2D.ravel(),
+            s=6, color="gray", alpha=0.6,
+            transform=ccrs.PlateCarree(),
+            zorder=3
+        )
+
     # colorbar
     cb = plt.colorbar(cf, ax=ax, shrink=0.75, aspect=30, pad=0.01, ticks=ticks)
     cb.set_label(title)
@@ -620,19 +601,21 @@ def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
     if use_zoom:
         legend_items = ", ".join([f'{p["nr"]}: {p["name"]}' for p in POIS])
         st.caption(f"**Points of interest (Nr → Name):** {legend_items}")
-    # --- Metocean grid points (gray dots at grid centers) ---
-    if use_zoom:
-        Lon2D, Lat2D = np.meshgrid(lon_c, lat_c)
 
-        ax.scatter(
-            Lon2D.ravel(), Lat2D.ravel(),
-            s=5, color="gray", alpha=0.6,
-            transform=ccrs.PlateCarree(),
-            zorder=3
-        )
 # -----------------------------
 # Render
 # -----------------------------
+def get_zoom_projection(name: str):
+    if name.startswith("PlateCarree"):
+        return ccrs.PlateCarree()
+    if name == "Mercator":
+        return ccrs.Mercator(central_longitude=10, min_latitude=40, max_latitude=82)
+    if name == "Lambert Conformal":
+        return ccrs.LambertConformal(
+            central_longitude=10, central_latitude=60, standard_parallels=(50, 65)
+        )
+    return ccrs.PlateCarree()
+
 plot_map(
     lonp, latp, arr_plot,
     label,
@@ -643,6 +626,18 @@ plot_map(
     use_zoom=zoom_ns,
     zoom_proj=get_zoom_projection(zoom_proj_name)
 )
+
+# -----------------------------
+# Table under the map (reference only)
+# -----------------------------
+if threshold_mode == "Hs limit per Tp (CSV + graph)":
+    with st.expander("Show Hs limit per Tp (table)", expanded=False):
+        df_view = pd.DataFrame({
+            "Tp (s)": tp_c,
+            "Hs_limit (m)": st.session_state["hs_per_tp_limits"]
+        })
+        st.dataframe(df_view.style.format({"Tp (s)": "{:.1f}", "Hs_limit (m)": "{:.1f}"}),
+                     use_container_width=True)
 
 # -----------------------------
 # Debug
@@ -661,11 +656,3 @@ if show_debug:
         "| Source:", os.path.basename(src),
         "| Threshold mode:", threshold_mode
     )
-# -----------------------------
-# Table under the map (reference)
-# -----------------------------
-if threshold_mode == "Hs limit per Tp (table)":
-    with st.expander("Show Hs limit per Tp (table)", expanded=False):
-        df_view = pd.DataFrame({"Tp (s)": tp_c, "Hs_limit (m)": st.session_state["hs_per_tp_limits"]})
-        st.dataframe(df_view.style.format({"Tp (s)": "{:.1f}", "Hs_limit (m)": "{:.1f}"}),
-                     use_container_width=True)
