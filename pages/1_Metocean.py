@@ -598,7 +598,14 @@ def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
     # POIs only on zoomed map
     if use_zoom:
         draw_pois(ax, POIS)
-
+    # --- Metocean grid points (small gray dots) ---
+    ax.scatter(
+        lon_c, lat_c,
+        s=5, color="gray", alpha=0.6,
+        transform=ccrs.PlateCarree(),
+        zorder=3,
+        label="Metocean grid"
+    )
     # colorbar
     cb = plt.colorbar(cf, ax=ax, shrink=0.75, aspect=30, pad=0.01, ticks=ticks)
     cb.set_label(title)
