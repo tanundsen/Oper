@@ -598,6 +598,7 @@ def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
     # POIs only on zoomed map
     if use_zoom:
         draw_pois(ax, POIS)
+
     # --- Metocean grid points (small gray dots) ---
     ax.scatter(
         lon_c, lat_c,
@@ -619,7 +620,16 @@ def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
     if use_zoom:
         legend_items = ", ".join([f'{p["nr"]}: {p["name"]}' for p in POIS])
         st.caption(f"**Points of interest (Nr → Name):** {legend_items}")
+    # --- Metocean grid points (gray dots at grid centers) ---
+    if use_zoom:
+        Lon2D, Lat2D = np.meshgrid(lon_c, lat_c)
 
+        ax.scatter(
+            Lon2D.ravel(), Lat2D.ravel(),
+            s=5, color="gray", alpha=0.6,
+            transform=ccrs.PlateCarree(),
+            zorder=3
+        )
 # -----------------------------
 # Render
 # -----------------------------
