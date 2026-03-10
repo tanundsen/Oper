@@ -412,6 +412,7 @@ def draw_pois(ax, pois):
 # -----------------------------
 # Plot function
 # -----------------------------
+
 def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
              use_zoom: bool, zoom_proj):
     # Axes projection
