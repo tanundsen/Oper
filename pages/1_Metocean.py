@@ -323,16 +323,24 @@ def prep_levels(arr, label, prefer_ticks_from=None, zoom=False):
             ticks = tp_ticks(1.0, np.nanmin(base), np.nanmax(base))
             return tp_shading(base), ticks, ticks
 
-    # Hs metrics
+    # Hs-based metrics
     if is_hs_quantity(label):
         if zoom:
-            # Zoomed contour spacing 0.2 m
-            levels = np.arange(np.nanmin(base), np.nanmax(base) + 0.2, 0.2)
-            ticks = levels
-            return levels, ticks, ticks
-        else:
-            ticks = hs_ticks(0.5, np.nanmin(base), np.nanmax(base))
-            return hs_shading(base), ticks, ticks
+            # --- filled colors every 0.1 m ---
+            filled = np.arange(np.nanmin(base), np.nanmax(base) + 0.1, 0.1)
+
+            # --- contour lines every 0.2 m ---
+            contours = np.arange(np.nanmin(base), np.nanmax(base) + 0.2, 0.2)
+
+            # ticks follow contours (clean look)
+            ticks = contours
+
+            return filled, contours, ticks
+
+    else:
+        # global = old behavior
+        ticks = hs_ticks(0.5, np.nanmin(base), np.nanmax(base))
+        return hs_shading(base), ticks, ticks
 
     # fallback
     lev = auto_levels(base, levels_generic)
