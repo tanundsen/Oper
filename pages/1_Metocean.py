@@ -327,7 +327,7 @@ def prep_levels(arr, label, prefer_ticks_from=None, zoom=False):
     if is_hs_quantity(label):
         if zoom:
             # Zoomed contour spacing 0.2 m
-            levels = np.arange(np.nanmin(base), np.nanmax(base) + 0.2, 0.1)
+            levels = np.arange(np.nanmin(base), np.nanmax(base) + 0.2, 0.2)
             ticks = levels
             return levels, ticks, ticks
         else:
@@ -442,8 +442,9 @@ def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
             cs,
             fontsize=6,
             inline=True,
-            inline_spacing=10,   # << closer contour labels
-            fmt="%g"
+            inline_spacing=1,   # << closer contour labels
+            fmt="%g",
+            manual=False
         )
 
     except Exception:
