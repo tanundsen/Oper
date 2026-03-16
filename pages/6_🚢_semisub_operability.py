@@ -6,17 +6,23 @@
 
 import os
 import re
+import pathlib
 import numpy as np
 import pandas as pd
 import xarray as xr
 import streamlit as st
 import matplotlib.pyplot as plt
+import cartopy  # to ensure environment var is honored before data fetches
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 
 # -----------------------------
-# Page setup
+# Environment & Page setup
 # -----------------------------
+# Use a writable cache on Streamlit Cloud and favor small Natural Earth sets.
+os.environ.setdefault("CARTOPY_DATA_DIR", "/tmp/cartopy")
+pathlib.Path(os.environ["CARTOPY_DATA_DIR"]).mkdir(parents=True, exist_ok=True)
+
 st.set_page_config(page_title="Semisub: Heave & Operability (North Sea)", layout="wide", page_icon="⚓")
 st.title("Semisub — Heave Response & Operability (North Sea)")
 
@@ -24,9 +30,9 @@ st.title("Semisub — Heave Response & Operability (North Sea)")
 # Constants
 # -----------------------------
 ZOOM_EXTENT = [-13, 35, 52, 76]
-FEATURE_SCALE = "10m"
-BASE_CMAP_CONT = "turbo"     # continuous fields (e.g., expected heave)
-CMAP_OPERABILITY = "jet_r"   # operability maps (reversed jet)
+FEATURE_SCALE = "110m"        # lighter data than "10m" for faster cold starts
+BASE_CMAP_CONT = "turbo"      # continuous fields (e.g., expected heave)
+CMAP_OPERABILITY = "jet_r"    # operability maps (reversed jet)
 CLIP_PCT = 99.6
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 NS_CANDIDATES = [
@@ -99,7 +105,7 @@ def hs_levels_zoom(arr):
     return filled, contours, contours
 
 def plot_zoom(lon, lat, data, title, filled, contours, ticks, cmap=BASE_CMAP_CONT, show_grid=True):
-    fig = plt.figure(figsize=(14, 6), dpi=200)
+    fig = plt.figure(figsize=(14, 6), dpi=160)
     ax = plt.axes(projection=ccrs.PlateCarree())
     cf = ax.contourf(lon, lat, data, levels=filled, cmap=cmap, extend="both",
                      transform=ccrs.PlateCarree(), zorder=1)
@@ -123,14 +129,14 @@ def plot_zoom(lon, lat, data, title, filled, contours, ticks, cmap=BASE_CMAP_CON
     cb.ax.tick_params(labelsize=8)
     ax.set_title(title)
     plt.subplots_adjust(left=0.02, right=0.97, top=0.93, bottom=0.06)
-    st.pyplot(fig, use_container_width=True)
+    st.pyplot(fig, width="stretch")
 
 def interp_rows(M, x_from, x_to):
     return np.vstack([np.interp(x_to, x_from, r) for r in M])
 
 def plot_hs_tp_curve(tp_vals, hs_limits, system_name, note_text=None):
     """Small line plot of the selected system’s Hs/Tp limit curve."""
-    fig, ax = plt.subplots(figsize=(4.2, 2.8), dpi=200)
+    fig, ax = plt.subplots(figsize=(4.2, 2.8), dpi=160)
     ax.plot(tp_vals, hs_limits, "-o", linewidth=1.8, markersize=3)
     ax.set_xlabel("Tp [s]")
     ax.set_ylabel("Hs limit [m]")
@@ -138,7 +144,7 @@ def plot_hs_tp_curve(tp_vals, hs_limits, system_name, note_text=None):
     ax.set_title(f"{system_name} — Hs/Tp limit")
     if note_text:
         ax.text(0.01, 0.02, note_text, transform=ax.transAxes, fontsize=7, va="bottom", ha="left", alpha=0.8)
-    st.pyplot(fig)
+    st.pyplot(fig, width="stretch")
 
 def default_index_for_substring(names, substr, fallback_idx):
     s = substr.lower()
@@ -194,7 +200,7 @@ with st.sidebar:
     )
     Hcrit = st.number_input("Hs threshold (m)", min_value=0.1, max_value=15.0, value=3.5, step=0.1)
     limit_csv_single = st.file_uploader("Upload single Hs/Tp curve CSV (2 columns: Tp, Hs_limit)", type=["csv"], key="hs_tp_limit_single")
-    limit_csv_multi = st.file_uploader("Upload per-configuration Hs/Tp limits CSV (Tp + one column per config)", type=["csv"], key="hs_tp_limit_multi")
+    limit_csv_multi  = st.file_uploader("Upload per-configuration Hs/Tp limits CSV (Tp + one column per config)", type=["csv"], key="hs_tp_limit_multi")
 
     st.subheader("Heave per meter Hs CSV")
     heave_csv = st.file_uploader("Upload RMS response per meter Hs (by TP)", type=["csv"], key="heave_per_hs_csv")
@@ -506,7 +512,7 @@ if draft_mode == "Dynamic: deep → shallow when Hs/Tp exceeded":
         j_deep = j_shallow = 0
 
     # Deep draft responses & limits
-    fTp_deep    = xr.DataArray(R_use[j_deep], dims=["tp_bin"])
+    fTp_deep     = xr.DataArray(R_use[j_deep], dims=["tp_bin"])
     M_heave_deep = HS2D * fTp_deep.broadcast_like(prob)
     HsLim2D_deep = xr.DataArray(Hs_limit_by_cfg[deep_cfg_name], dims=["tp_bin"]).broadcast_like(prob)
     I_wave_deep  = (HS2D <= HsLim2D_deep).astype(float)
@@ -693,8 +699,8 @@ for j, cfg_j in enumerate(cfg_names):
 
     # Scalar means (unweighted spatial mean)
     P_heave_j = float(P_heave_map.mean(dim=("lat3_bin","lon3_bin"), skipna=True))
-    P_wave_j  = float(P_wave_map.mean(dim=("lat3_bin","lon3_bin"), skipna=True))
-    P_both_j  = float(P_both_map.mean(dim=("lat3_bin","lon3_bin"), skipna=True))
+    P_wave_j  = float(P_wave_map.mean(dim=("lat3_bin","lon3_bin"),  skipna=True))
+    P_both_j  = float(P_both_map.mean(dim=("lat3_bin","lon3_bin"),  skipna=True))
 
     results.append({
         "Configuration": cfg_j,
@@ -707,7 +713,7 @@ df_ops = pd.DataFrame(results).set_index("Configuration")
 st.dataframe(df_ops.style.format("{:.1f}"))
 
 st.markdown("### Operability comparison chart")
-fig, ax = plt.subplots(figsize=(10,5))
+fig, ax = plt.subplots(figsize=(10,5), dpi=160)
 x = np.arange(len(cfg_names)); w = 0.25
 ax.bar(x - w, df_ops["Heave-only (%)"], width=w, label="Heave-only")
 ax.bar(x,      df_ops["Wave-only (%)"],  width=w, label="Wave-only")
@@ -715,7 +721,7 @@ ax.bar(x + w,  df_ops["Combined (%)"],   width=w, label="Combined")
 ax.set_xticks(x); ax.set_xticklabels(cfg_names)
 ax.set_ylabel("Operability (%)"); ax.set_ylim(0, 100)
 ax.legend(); ax.grid(True, alpha=0.3)
-st.pyplot(fig)
+st.pyplot(fig, width="stretch")
 
 # -----------------------------
 # A vs B operability comparison (maps + difference)
@@ -747,7 +753,7 @@ def to_numpy_sorted(field_da):
 P_heave_A, P_wave_A, P_both_A = operability_maps_for_cfg(cfgA)
 P_heave_B, P_wave_B, P_both_B = operability_maps_for_cfg(cfgB)
 
-# Pick metric
+# Pick metric (base)
 if cmp_metric == "Operability: heave ≤ limit (%)":
     A_map = P_heave_A; B_map = P_heave_B; metric_tag = f"Heave ≤ {heave_limit:.2f} m"
 elif cmp_metric == "Operability: wave ≤ Hs/Tp limit (%)":
@@ -822,7 +828,7 @@ levels_diff = np.linspace(vmin, vmax, n_lev)
 cmap_diff = "coolwarm"
 
 def plot_diff(lon, lat, data, title, levels):
-    fig = plt.figure(figsize=(14, 6), dpi=200)
+    fig = plt.figure(figsize=(14, 6), dpi=160)
     ax = plt.axes(projection=ccrs.PlateCarree())
     cf = ax.contourf(lon, lat, data, levels=levels, cmap=cmap_diff, extend="both",
                      transform=ccrs.PlateCarree(), zorder=1)
@@ -848,7 +854,7 @@ def plot_diff(lon, lat, data, title, levels):
     cb.ax.tick_params(labelsize=8)
     ax.set_title(title)
     plt.subplots_adjust(left=0.02, right=0.97, top=0.93, bottom=0.06)
-    st.pyplot(fig, use_container_width=True)
+    st.pyplot(fig, width="stretch")
 
 st.markdown("### Difference map (B − A)")
 diff_title_tag = base_metric_tag if dyn_applied_to is None else dynamic_tag
@@ -858,13 +864,9 @@ plot_diff(
     levels_diff
 )
 
-# Spatial means (unweighted); swap to area-weighted if desired
-A_mean = float(P_heave_A.mean(dim=("lat3_bin","lon3_bin"), skipna=True)) if cmp_metric == "Operability: heave ≤ limit (%)" else \
-         float(P_wave_A.mean(dim=("lat3_bin","lon3_bin"),  skipna=True)) if cmp_metric == "Operability: wave ≤ Hs/Tp limit (%)" else \
-         float(P_both_A.mean(dim=("lat3_bin","lon3_bin"),  skipna=True))
-B_mean = float(P_heave_B.mean(dim=("lat3_bin","lon3_bin"), skipna=True)) if cmp_metric == "Operability: heave ≤ limit (%)" else \
-         float(P_wave_B.mean(dim=("lat3_bin","lon3_bin"),  skipna=True)) if cmp_metric == "Operability: wave ≤ Hs/Tp limit (%)" else \
-         float(P_both_B.mean(dim=("lat3_bin","lon3_bin"),  skipna=True))
+# Spatial means (unweighted) — computed after any dynamic override so titles and numbers align
+A_mean = float(A_map.mean(dim=("lat3_bin","lon3_bin"), skipna=True))
+B_mean = float(B_map.mean(dim=("lat3_bin","lon3_bin"), skipna=True))
 D_mean = B_mean - A_mean
 
 st.markdown("### Spatial means (unweighted)")
@@ -876,7 +878,7 @@ st.write(
 
 # Compact bar chart
 st.markdown("### A vs B (means)")
-fig2, ax2 = plt.subplots(figsize=(5.5, 3.2))
+fig2, ax2 = plt.subplots(figsize=(5.5, 3.2), dpi=160)
 ax2.bar([0, 1, 2], [A_mean, B_mean, D_mean], color=["tab:blue", "tab:orange", "tab:green"])
 ax2.set_xticks([0, 1, 2]); ax2.set_xticklabels([cfgA, cfgB, "Δ(B−A)"])
 ax2.set_ylabel("Operability / Δ [%, pp]")
@@ -884,4 +886,4 @@ ymin = min(0, A_mean, B_mean, D_mean) - 5
 ymax = max(100, A_mean, B_mean, D_mean) + 5
 ax2.set_ylim(ymin, ymax)
 ax2.grid(True, axis="y", alpha=0.3)
-st.pyplot(fig2)
+st.pyplot(fig2, width="stretch")
