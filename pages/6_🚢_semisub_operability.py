@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 # 06_Semisub_HeaveOperability.py — North Sea: Heave response & operability from
 # "RMS response per meter Hs" vs Tp, with per‑configuration Hs/Tp limits support, A/B diff,
-# and Dynamic Draft Switching (deep 17.75 m -> shallow 15.75 m when Hs/Tp exceeded).
+# and Dynamic Draft Switching (deep 17.75 m -> shallow 15.75 m when Hs/Tp exceeded),
+# plus Dynamic Switch Map (deep contribution share).
 
 import os
 import re
@@ -166,7 +167,7 @@ tp_edges = ds["tp_edges"].values
 lat_edges = ds["lat3_edges"].values
 lon_edges = ds["lon3_edges"].values
 
-units = str(ds["hs_edges"].attrs.get("units","")).lower()
+units = str(ds["hs_edges"].attrs.get("units","" )).lower()
 if "cm" in units or (np.nanmax(hs_edges) > 50 and "m" not in units):
     hs_edges = hs_edges / 100.0
 
@@ -482,7 +483,8 @@ P_both  = (prob * I_heave * I_wave_sel).sum(dim=("hs_bin","tp_bin")) * 100.0
 # -----------------------------
 # Dynamic draft switching (deep -> shallow when Hs/Tp exceeded)
 # -----------------------------
-P_dyn = None  # will remain None if not using dynamic mode
+P_dyn = None
+P_dyn_deep_share = None  # deep contribution (% of accepted dynamic operability)
 if draft_mode == "Dynamic: deep → shallow when Hs/Tp exceeded":
     try:
         j_deep    = cfg_names.index(deep_cfg_name)
@@ -511,6 +513,16 @@ if draft_mode == "Dynamic: deep → shallow when Hs/Tp exceeded":
 
     # Dynamic combined operability (%)
     P_dyn = (prob * I_wave_dyn * I_heave_dyn).sum(dim=("hs_bin","tp_bin")) * 100.0
+
+    # ---- Dynamic switch map: fraction of accepted dynamic time coming from deep branch ----
+    accept_deep = prob * I_wave_deep * I_heave_deep
+    accept_sh   = prob * (1.0 - I_wave_deep) * I_heave_sh
+    total_acc   = accept_deep + accept_sh
+    P_dyn_deep_share = xr.where(
+        total_acc.sum(dim=("hs_bin","tp_bin")) > 0,
+        (accept_deep.sum(dim=("hs_bin","tp_bin")) / total_acc.sum(dim=("hs_bin","tp_bin"))) * 100.0,
+        np.nan
+    )  # (lat,lon) in %
 
     # ---- Diagnostics: why dynamic may look unchanged ----
     same_cfg = (deep_cfg_name == shallow_cfg_name)
@@ -549,6 +561,7 @@ metric_options = [
 ]
 if P_dyn is not None:
     metric_options.append("Operability: Dynamic deep→shallow (%)")
+    metric_options.append("Dynamic: deep contribution share (%)")
 
 metric = st.sidebar.selectbox("Metric", metric_options)
 
@@ -566,6 +579,7 @@ p_wave2,  latp, lonp = prep(P_wave)
 p_both2,  latp, lonp = prep(P_both)
 if P_dyn is not None:
     p_dyn2, latp, lonp = prep(P_dyn)
+    deep_share2, latp, lonp = prep(P_dyn_deep_share)
 
 # -----------------------------
 # Render map depending on metric
@@ -606,7 +620,7 @@ elif metric == "Operability: ALL limits (%)":
     contours = pct_contours_from(cbar_lower)
     ticks = pct_ticks_from(cbar_lower)
 
-    if (draft_mode.startswith("Dynamic")) and (P_dyn is not None):
+    if (P_dyn is not None) and (draft_mode.startswith("Dynamic")):
         plot_zoom(
             lonp, latp, p_dyn2,
             f"Operability (%) — Dynamic draft switching ({deep_cfg_name} → {shallow_cfg_name}){title_suffix}",
@@ -630,6 +644,17 @@ elif metric == "Operability: Dynamic deep→shallow (%)" and P_dyn is not None:
         f"Operability (%) — Dynamic draft switching ({deep_cfg_name} → {shallow_cfg_name}){title_suffix}",
         filled, contours, ticks,
         cmap=CMAP_OPERABILITY, show_grid=show_grid
+    )
+
+elif metric == "Dynamic: deep contribution share (%)" and (P_dyn_deep_share is not None):
+    # Share map uses 0–100% full range
+    levels_share = np.linspace(0, 100, 51)
+    ticks_share  = np.arange(0, 101, 10)
+    plot_zoom(
+        lonp, latp, deep_share2,
+        f"Dynamic: deep contribution share (%) — accepted time ({deep_cfg_name} vs {shallow_cfg_name}){title_suffix}",
+        levels_share, ticks_share, ticks_share,
+        cmap="coolwarm", show_grid=show_grid
     )
 
 st.caption(
