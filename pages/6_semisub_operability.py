@@ -176,7 +176,7 @@ with st.sidebar:
     heave_csv = st.file_uploader("Upload RMS response per meter Hs (by TP)", type=["csv"], key="heave_per_hs_csv")
 
     st.subheader("Heave acceptance")
-    heave_limit = st.number_input("Heave limit (m)", min_value=0.1, max_value=20.0, value=3.0, step=0.1)
+    heave_limit = st.number_input("Heave limit (m) MPM double amplitude", min_value=0.1, max_value=20.0, value=3.0, step=0.1)
 
     st.subheader("Display")
     show_grid = st.checkbox("Show grid points", True)
@@ -422,7 +422,7 @@ st.sidebar.subheader("Metric to show")
 metric = st.sidebar.selectbox(
     "Metric",
     [
-        "Expected heave (m)",
+        "Expected heave (m) MPM double amplitude",
         "Operability: heave ≤ limit (%)",
         "Operability: wave ≤ Hs/Tp limit (%)",
         "Operability: ALL limits (%)",
