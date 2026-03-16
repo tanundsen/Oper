@@ -23,7 +23,8 @@ st.title("Semisub — Heave Response & Operability (North Sea)")
 # -----------------------------
 ZOOM_EXTENT = [-13, 35, 52, 76]
 FEATURE_SCALE = "10m"
-BASE_CMAP = "turbo"
+BASE_CMAP_CONT = "turbo"   # for continuous fields (e.g., expected heave)
+CMAP_OPERABILITY = "RdYlGn"  # reverse coloring for semisub operability: low=red, high=green
 CLIP_PCT = 99.6
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -44,7 +45,8 @@ def load_nc(paths):
             pass
     raise FileNotFoundError("Could not find metocean_scatter_050deg_NS_monthclim.nc")
 
-def bin_centers(edges): return 0.5 * (edges[:-1] + edges[1:])
+def bin_centers(edges): 
+    return 0.5 * (edges[:-1] + edges[1:])
 
 def unwrap_lon_centers_from_edges(lon_edges):
     lon_c = bin_centers(lon_edges)
@@ -64,8 +66,11 @@ def normalize_pdf(prob):
     tot = prob.sum(dim=("hs_bin","tp_bin"))
     return xr.where(tot > 0, prob/tot, 0)
 
-def pct_ticks(): return np.arange(0, 101, 10)
-def pct_levels(): return np.linspace(0, 100, 61)
+def pct_ticks(): 
+    return np.arange(0, 101, 10)
+
+def pct_levels(): 
+    return np.linspace(0, 100, 61)
 
 def hs_levels_zoom(arr):
     vmin = float(np.nanmin(arr)); vmax = float(np.nanmax(arr))
@@ -75,7 +80,7 @@ def hs_levels_zoom(arr):
     contours = np.arange(np.floor(vmin/0.2)*0.2, np.ceil(vmax/0.2)*0.2 + 1e-12, 0.2)
     return filled, contours, contours
 
-def plot_zoom(lon, lat, data, title, filled, contours, ticks, cmap=BASE_CMAP, show_grid=True):
+def plot_zoom(lon, lat, data, title, filled, contours, ticks, cmap=BASE_CMAP_CONT, show_grid=True):
     fig = plt.figure(figsize=(14, 6), dpi=200)
     ax = plt.axes(projection=ccrs.PlateCarree())
     cf = ax.contourf(lon, lat, data, levels=filled, cmap=cmap, extend="both",
@@ -104,6 +109,18 @@ def plot_zoom(lon, lat, data, title, filled, contours, ticks, cmap=BASE_CMAP, sh
 
 def interp_rows(M, x_from, x_to):
     return np.vstack([np.interp(x_to, x_from, r) for r in M])
+
+def plot_hs_tp_curve(tp_vals, hs_limits, system_name, note_text=None):
+    """Small line plot of the selected system’s Hs/Tp limit curve."""
+    fig, ax = plt.subplots(figsize=(4.2, 2.8), dpi=200)
+    ax.plot(tp_vals, hs_limits, "-o", linewidth=1.8, markersize=3)
+    ax.set_xlabel("Tp [s]")
+    ax.set_ylabel("Hs limit [m]")
+    ax.grid(True, alpha=0.35)
+    ax.set_title(f"{system_name} — Hs/Tp limit")
+    if note_text:
+        ax.text(0.01, 0.02, note_text, transform=ax.transAxes, fontsize=7, va="bottom", ha="left", alpha=0.8)
+    st.pyplot(fig)
 
 # -----------------------------
 # Load dataset (regional)
@@ -368,6 +385,13 @@ else:
 cfg = st.selectbox("Hull alternative", cfg_names, index=0)
 i_cfg = cfg_names.index(cfg)
 
+# --- Small line plot of the selected system’s Hs/Tp limit curve ---
+Hs_limit_tp_sel = Hs_limit_by_cfg[cfg]
+# Place it small in a narrow column
+curve_col, spacer = st.columns([1.2, 3.8])
+with curve_col:
+    plot_hs_tp_curve(tp_c, Hs_limit_tp_sel, cfg, note_text=limit_note)
+
 # Heave per meter Hs vs Tp (for selected cfg)
 fTp = xr.DataArray(R_use[i_cfg], dims=["tp_bin"])       # m/m
 
@@ -377,7 +401,6 @@ TPmask = fTp.broadcast_like(prob)
 M_heave = HS2D * TPmask                                  # m
 
 # Wave acceptance for selected cfg
-Hs_limit_tp_sel = Hs_limit_by_cfg[cfg]
 HsLim2D_sel = xr.DataArray(Hs_limit_tp_sel, dims=["tp_bin"]).broadcast_like(prob)
 I_wave_sel = (HS2D <= HsLim2D_sel).astype(float)
 
@@ -422,13 +445,13 @@ p_both2,  latp, lonp = prep(P_both)
 # Render one map depending on metric
 if metric == "Expected heave (m)":
     filled, contours, ticks = hs_levels_zoom(heave2)
-    plot_zoom(lonp, latp, heave2, f"Expected heave (m) — {cfg}{title_suffix}", filled, contours, ticks, cmap=BASE_CMAP, show_grid=show_grid)
+    plot_zoom(lonp, latp, heave2, f"Expected heave (m) — {cfg}{title_suffix}", filled, contours, ticks, cmap=BASE_CMAP_CONT, show_grid=show_grid)
 elif metric == "Operability: heave ≤ limit (%)":
-    plot_zoom(lonp, latp, p_heave2, f"Operability (%) — Heave ≤ {heave_limit:.2f} m{title_suffix}", pct_levels(), pct_ticks(), pct_ticks(), cmap=BASE_CMAP, show_grid=show_grid)
+    plot_zoom(lonp, latp, p_heave2, f"Operability (%) — Heave ≤ {heave_limit:.2f} m{title_suffix}", pct_levels(), pct_ticks(), pct_ticks(), cmap=CMAP_OPERABILITY, show_grid=show_grid)
 elif metric == "Operability: wave ≤ Hs/Tp limit (%)":
-    plot_zoom(lonp, latp, p_wave2,  "Operability (%) — Wave (Hs/Tp limit)"+title_suffix, pct_levels(), pct_ticks(), pct_ticks(), cmap=BASE_CMAP, show_grid=show_grid)
+    plot_zoom(lonp, latp, p_wave2,  "Operability (%) — Wave (Hs/Tp limit)"+title_suffix, pct_levels(), pct_ticks(), pct_ticks(), cmap=CMAP_OPERABILITY, show_grid=show_grid)
 else:  # ALL limits
-    plot_zoom(lonp, latp, p_both2,  f"Operability (%) — Wave ∩ Heave — {cfg}{title_suffix}", pct_levels(), pct_ticks(), pct_ticks(), cmap=BASE_CMAP, show_grid=show_grid)
+    plot_zoom(lonp, latp, p_both2,  f"Operability (%) — Wave ∩ Heave — {cfg}{title_suffix}", pct_levels(), pct_ticks(), pct_ticks(), cmap=CMAP_OPERABILITY, show_grid=show_grid)
 
 st.caption(mapping_note + "  |  " + limit_note)
 
