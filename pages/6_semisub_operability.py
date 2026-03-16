@@ -23,8 +23,8 @@ st.title("Semisub — Heave Response & Operability (North Sea)")
 # -----------------------------
 ZOOM_EXTENT = [-13, 35, 52, 76]
 FEATURE_SCALE = "10m"
-BASE_CMAP_CONT = "turbo"   # for continuous fields (e.g., expected heave)
-CMAP_OPERABILITY = "RdYlGn"  # reverse coloring for semisub operability: low=red, high=green
+BASE_CMAP_CONT = "turbo"    # continuous fields (e.g., expected heave)
+CMAP_OPERABILITY = "jet_r"  # operability maps (reversed jet)
 CLIP_PCT = 99.6
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -45,7 +45,7 @@ def load_nc(paths):
             pass
     raise FileNotFoundError("Could not find metocean_scatter_050deg_NS_monthclim.nc")
 
-def bin_centers(edges): 
+def bin_centers(edges):
     return 0.5 * (edges[:-1] + edges[1:])
 
 def unwrap_lon_centers_from_edges(lon_edges):
@@ -66,11 +66,31 @@ def normalize_pdf(prob):
     tot = prob.sum(dim=("hs_bin","tp_bin"))
     return xr.where(tot > 0, prob/tot, 0)
 
+# Percent helpers (generic)
 def pct_ticks(): 
     return np.arange(0, 101, 10)
 
 def pct_levels(): 
     return np.linspace(0, 100, 61)
+
+# Dynamic percent helpers (respect lower bound)
+def pct_levels_from(lo):
+    lo = float(lo)
+    # 1%-step levels from lo to 100
+    n = int(max(1, np.floor(100 - lo))) + 1
+    return np.linspace(lo, 100, n)
+
+def pct_contours_from(lo):
+    # contour lines every 10% starting from the next 10% step >= lo
+    start = int(np.ceil(lo / 10.0) * 10)
+    start = min(start, 100)
+    return np.arange(start, 101, 10)
+
+def pct_ticks_from(lo):
+    # ticks at lower bound (even if not on a 10% step) + decade ticks to 100
+    base = np.arange(0, 101, 10)
+    ticks = np.unique(np.concatenate(([float(lo)], base)))
+    return ticks[ticks >= lo]
 
 def hs_levels_zoom(arr):
     vmin = float(np.nanmin(arr)); vmax = float(np.nanmax(arr))
@@ -176,10 +196,15 @@ with st.sidebar:
     heave_csv = st.file_uploader("Upload RMS response per meter Hs (by TP)", type=["csv"], key="heave_per_hs_csv")
 
     st.subheader("Heave acceptance")
-    heave_limit = st.number_input("Heave limit (m) MPM double amplitude", min_value=0.1, max_value=20.0, value=3.0, step=0.1)
+    heave_limit = st.number_input("Heave limit (m)", min_value=0.1, max_value=20.0, value=3.0, step=0.1)
 
     st.subheader("Display")
     show_grid = st.checkbox("Show grid points", True)
+
+    st.subheader("Colorbar")
+    # Keep at most 95% to avoid degenerate range (needs min<max)
+    cbar_lower = st.slider("Operability colorbar lower limit (%)", min_value=0, max_value=95, value=50, step=1,
+                           help="Sets the lower bound of the operability colorbar. Data are NOT clipped; colors span [lower, 100].")
 
 # -----------------------------
 # Probability field
@@ -306,11 +331,6 @@ def build_single_curve(tp_centers, csv_file, fallback_val):
     order = np.argsort(tp_in)
     return np.interp(tp_centers, tp_in[order], hs_in[order], left=hs_in[order][0], right=hs_in[order][-1])
 
-
-def pct_levels_50():
-    return np.linspace(70, 100, 31)  # 50–100%
-
-
 def parse_limits_per_config(csv_file, cfg_names, tp_centers, fallback_val):
     """
     CSV format:
@@ -392,7 +412,6 @@ i_cfg = cfg_names.index(cfg)
 
 # --- Small line plot of the selected system’s Hs/Tp limit curve ---
 Hs_limit_tp_sel = Hs_limit_by_cfg[cfg]
-# Place it small in a narrow column
 curve_col, spacer = st.columns([1.2, 3.8])
 with curve_col:
     plot_hs_tp_curve(tp_c, Hs_limit_tp_sel, cfg, note_text=limit_note)
@@ -427,7 +446,7 @@ st.sidebar.subheader("Metric to show")
 metric = st.sidebar.selectbox(
     "Metric",
     [
-        "Expected heave (m) MPM double amplitude",
+        "Expected heave (m)",
         "Operability: heave ≤ limit (%)",
         "Operability: wave ≤ Hs/Tp limit (%)",
         "Operability: ALL limits (%)",
@@ -447,42 +466,52 @@ p_heave2, latp, lonp = prep(P_heave)
 p_wave2,  latp, lonp = prep(P_wave)
 p_both2,  latp, lonp = prep(P_both)
 
-# Render one map depending on metric
+# -----------------------------
+# Render map depending on metric
+# -----------------------------
 if metric == "Expected heave (m)":
     filled, contours, ticks = hs_levels_zoom(heave2)
-    plot_zoom(lonp, latp, heave2, f"Expected heave (m) — {cfg}{title_suffix}", filled, contours, ticks, cmap=BASE_CMAP_CONT, show_grid=show_grid)
+    plot_zoom(
+        lonp, latp, heave2,
+        f"Expected heave (m) — {cfg}{title_suffix}",
+        filled, contours, ticks,
+        cmap=BASE_CMAP_CONT, show_grid=show_grid
+    )
 
 elif metric == "Operability: heave ≤ limit (%)":
+    filled = pct_levels_from(cbar_lower)
+    contours = pct_contours_from(cbar_lower)
+    ticks = pct_ticks_from(cbar_lower)
     plot_zoom(
         lonp, latp, p_heave2,
         f"Operability (%) — Heave ≤ {heave_limit:.2f} m{title_suffix}",
-        pct_levels_50(), pct_ticks(), pct_ticks(),
-        cmap="jet_r",
-        show_grid=show_grid
+        filled, contours, ticks,
+        cmap=CMAP_OPERABILITY, show_grid=show_grid
     )
 
-
 elif metric == "Operability: wave ≤ Hs/Tp limit (%)":
+    filled = pct_levels_from(cbar_lower)
+    contours = pct_contours_from(cbar_lower)
+    ticks = pct_ticks_from(cbar_lower)
     plot_zoom(
         lonp, latp, p_wave2,
         "Operability (%) — Wave (Hs/Tp limit)" + title_suffix,
-        pct_levels_50(), pct_ticks(), pct_ticks(),
-        cmap="jet_r",
-        show_grid=show_grid
+        filled, contours, ticks,
+        cmap=CMAP_OPERABILITY, show_grid=show_grid
     )
 
-
 else:  # ALL limits
+    filled = pct_levels_from(cbar_lower)
+    contours = pct_contours_from(cbar_lower)
+    ticks = pct_ticks_from(cbar_lower)
     plot_zoom(
         lonp, latp, p_both2,
         f"Operability (%) — Wave ∩ Heave — {cfg}{title_suffix}",
-        pct_levels_50(), pct_ticks(), pct_ticks(),
-        cmap="jet_r",
-        show_grid=show_grid
+        filled, contours, ticks,
+        cmap=CMAP_OPERABILITY, show_grid=show_grid
     )
 
-
-st.caption(mapping_note + "  |  " + limit_note)
+st.caption(mapping_note + "  |  " + limit_note + f"  |  Colorbar lower bound: {cbar_lower:.0f}%")
 
 # -----------------------------
 # Multi‑configuration operability comparison (uses each cfg's own Hs/Tp curve)
@@ -496,13 +525,18 @@ for j, cfg_j in enumerate(cfg_names):
 
     # per‑cfg wave limit
     Hs_limit_tp_j = Hs_limit_by_cfg[cfg_j]
-    I_wave_j = (HS2D <= xr.DataArray(Hs_limit_tp_j, dims=["tp_bin"]).broadcast_like(prob)).astype(float)
-
+    I_wave_j  = (HS2D <= xr.DataArray(Hs_limit_tp_j, dims=["tp_bin"]).broadcast_like(prob)).astype(float)
     I_heave_j = (M_heave_j <= heave_limit).astype(float)
 
-    P_heave_j = float((prob * I_heave_j).sum(dim=("hs_bin","tp_bin"))) * 100.0
-    P_wave_j  = float((prob * I_wave_j ).sum(dim=("hs_bin","tp_bin"))) * 100.0
-    P_both_j  = float((prob * I_heave_j * I_wave_j).sum(dim=("hs_bin","tp_bin"))) * 100.0
+    # Maps (lat,lon) of operability %
+    P_heave_map = (prob * I_heave_j).sum(dim=("hs_bin","tp_bin")) * 100.0
+    P_wave_map  = (prob * I_wave_j ).sum(dim=("hs_bin","tp_bin")) * 100.0
+    P_both_map  = (prob * I_heave_j * I_wave_j).sum(dim=("hs_bin","tp_bin")) * 100.0
+
+    # Reduce to scalars via spatial mean (unweighted); could switch to area-weighted if desired
+    P_heave_j = float(P_heave_map.mean(dim=("lat3_bin","lon3_bin"), skipna=True))
+    P_wave_j  = float(P_wave_map.mean(dim=("lat3_bin","lon3_bin"),  skipna=True))
+    P_both_j  = float(P_both_map.mean(dim=("lat3_bin","lon3_bin"),  skipna=True))
 
     results.append({
         "Configuration": cfg_j,
