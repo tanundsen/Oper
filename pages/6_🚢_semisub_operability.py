@@ -28,7 +28,6 @@ FEATURE_SCALE = "10m"
 BASE_CMAP_CONT = "turbo"     # continuous fields (e.g., expected heave)
 CMAP_OPERABILITY = "jet_r"   # operability maps (reversed jet)
 CLIP_PCT = 99.6
-
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 NS_CANDIDATES = [
     os.path.join(BASE_DIR, "..", "metocean_scatter_050deg_NS_monthclim.nc"),
@@ -95,7 +94,7 @@ def hs_levels_zoom(arr):
     vmin = float(np.nanmin(arr)); vmax = float(np.nanmax(arr))
     if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin == vmax:
         vmin, vmax = 0.0, 1.0
-    filled   = np.arange(np.floor(vmin/0.1)*0.1, np.ceil(vmax/0.1)*0.1 + 1e-12, 0.1)
+    filled = np.arange(np.floor(vmin/0.1)*0.1, np.ceil(vmax/0.1)*0.1 + 1e-12, 0.1)
     contours = np.arange(np.floor(vmin/0.2)*0.2, np.ceil(vmax/0.2)*0.2 + 1e-12, 0.2)
     return filled, contours, contours
 
@@ -171,8 +170,8 @@ units = str(ds["hs_edges"].attrs.get("units","" )).lower()
 if "cm" in units or (np.nanmax(hs_edges) > 50 and "m" not in units):
     hs_edges = hs_edges / 100.0
 
-hs_c  = bin_centers(hs_edges)    # (hs_bin)
-tp_c  = bin_centers(tp_edges)    # (tp_bin)
+hs_c = bin_centers(hs_edges)  # (hs_bin)
+tp_c = bin_centers(tp_edges)  # (tp_bin)
 lat_c = bin_centers(lat_edges)
 lon_c = unwrap_lon_centers_from_edges(lon_edges)
 
@@ -195,7 +194,7 @@ with st.sidebar:
     )
     Hcrit = st.number_input("Hs threshold (m)", min_value=0.1, max_value=15.0, value=3.5, step=0.1)
     limit_csv_single = st.file_uploader("Upload single Hs/Tp curve CSV (2 columns: Tp, Hs_limit)", type=["csv"], key="hs_tp_limit_single")
-    limit_csv_multi  = st.file_uploader("Upload per-configuration Hs/Tp limits CSV (Tp + one column per config)", type=["csv"], key="hs_tp_limit_multi")
+    limit_csv_multi = st.file_uploader("Upload per-configuration Hs/Tp limits CSV (Tp + one column per config)", type=["csv"], key="hs_tp_limit_multi")
 
     st.subheader("Heave per meter Hs CSV")
     heave_csv = st.file_uploader("Upload RMS response per meter Hs (by TP)", type=["csv"], key="heave_per_hs_csv")
@@ -207,8 +206,11 @@ with st.sidebar:
     show_grid = st.checkbox("Show grid points", True)
 
     st.subheader("Colorbar")
-    cbar_lower = st.slider("Operability colorbar lower limit (%)", min_value=0, max_value=95, value=50, step=1,
-                           help="Sets the lower bound of the operability colorbar. Data are NOT clipped; colors span [lower, 100].")
+    cbar_lower = st.slider(
+        "Operability colorbar lower limit (%)",
+        min_value=0, max_value=95, value=50, step=1,
+        help="Sets the lower bound of the operability colorbar. Data are NOT clipped; colors span [lower, 100]."
+    )
 
 # -----------------------------
 # Probability field
@@ -219,8 +221,8 @@ if mode == "By month":
 else:
     prob = ds["prob"].sum(dim="month")
     title_suffix = " — Annual"
-prob = normalize_pdf(prob)  # (hs,tp,lat,lon)
 
+prob = normalize_pdf(prob)  # (hs,tp,lat,lon)
 HS = xr.DataArray(hs_c, dims=["hs_bin"])
 
 # -----------------------------
@@ -261,6 +263,7 @@ def parse_heave_per_hs(uploaded_csv):
                 ok = False; break
         if ok:
             records.append((first_cell, vals))
+
     if not records:
         st.error("Heave CSV: no configuration rows found under TP header.")
         st.stop()
@@ -281,6 +284,7 @@ def parse_heave_per_hs(uploaded_csv):
             if np.isfinite(arr).sum() >= 3:
                 tp_centers_csv = arr
             break
+
     return cfg_names, R_csv, tp_centers_csv
 
 if heave_csv is None:
@@ -314,17 +318,20 @@ def build_single_curve(tp_centers, csv_file, fallback_val):
         df = pd.read_csv(csv_file)
     except UnicodeDecodeError:
         df = pd.read_csv(csv_file, encoding="latin-1")
+
     cols_low = [c.lower().strip() for c in df.columns]
     def col_like(options):
         for o in options:
             if o in cols_low:
                 return df.columns[cols_low.index(o)]
         return None
+
     tp_col = col_like(["tp (s)", "tp", "tp_s", "period"])
     hs_col = col_like(["hs_limit (m)", "hs limit (m)", "hs_limit", "hs (m)", "hs"])
     if tp_col is None or hs_col is None:
         st.error("Single curve CSV must contain 'Tp (s)' and 'Hs_limit (m)'. Using Hcrit.")
         return np.full_like(tp_centers, fallback_val, dtype=float)
+
     tp_in = pd.to_numeric(df[tp_col], errors="coerce").astype(float).values
     hs_in = pd.to_numeric(df[hs_col], errors="coerce").astype(float).values
     m = np.isfinite(tp_in) & np.isfinite(hs_in)
@@ -332,6 +339,7 @@ def build_single_curve(tp_centers, csv_file, fallback_val):
     if tp_in.size < 2:
         st.error("Single curve CSV must have ≥2 rows. Using Hcrit.")
         return np.full_like(tp_centers, fallback_val, dtype=float)
+
     order = np.argsort(tp_in)
     return np.interp(tp_centers, tp_in[order], hs_in[order], left=hs_in[order][0], right=hs_in[order][-1])
 
@@ -372,6 +380,7 @@ def parse_limits_per_config(csv_file, cfg_names, tp_centers, fallback_val):
 
     limits_by_cfg = {}
     missing = []
+
     # Column name matching: case-insensitive, strip spaces
     col_map = {c.strip().lower(): c for c in df.columns if c != tp_col}
     for cfg in cfg_names:
@@ -415,6 +424,7 @@ with st.sidebar:
     st.subheader("Two‑config comparison")
     cfgA = st.selectbox("Config A", cfg_names, index=0, key="cmpA")
     cfgB = st.selectbox("Config B", cfg_names, index=min(1, len(cfg_names)-1), key="cmpB")
+
     cmp_metric = st.selectbox(
         "Metric for comparison",
         [
@@ -427,7 +437,7 @@ with st.sidebar:
     )
     zero_center = st.checkbox("Zero‑center difference color scale", True,
                               help="Keeps negative and positive ranges symmetric around 0.")
-    diff_absmax = st.slider("Max |Δ| for colorbar (pp)", 5, 50, 20, 1,
+    diff_absmax = st.slider("Max Δ for colorbar (pp)", 5, 50, 20, 1,
                             help="Sets ±range for the difference map in percentage points.")
 
     st.subheader("Draft strategy")
@@ -439,10 +449,11 @@ with st.sidebar:
         ],
         index=0
     )
+
     # Let the user select which CSV rows correspond to deep and shallow drafts.
     deep_default    = default_index_for_substring(cfg_names, "17.75", 0)
     shallow_default = default_index_for_substring(cfg_names, "15.75", min(1, len(cfg_names)-1))
-    deep_cfg_name = st.selectbox("Deep-draft configuration", cfg_names, index=deep_default, key="deep_cfg")
+    deep_cfg_name    = st.selectbox("Deep-draft configuration",    cfg_names, index=deep_default,    key="deep_cfg")
     shallow_cfg_name = st.selectbox("Shallow-draft configuration", cfg_names, index=shallow_default, key="shallow_cfg")
 
 # -----------------------------
@@ -461,13 +472,13 @@ with curve_col:
 fTp = xr.DataArray(R_use[i_cfg], dims=["tp_bin"])  # m/m
 
 # Sea-state heave magnitude
-HS2D   = xr.DataArray(hs_c, dims=["hs_bin"]).broadcast_like(prob)
+HS2D = xr.DataArray(hs_c, dims=["hs_bin"]).broadcast_like(prob)
 TPmask = fTp.broadcast_like(prob)
-M_heave = HS2D * TPmask                            # m
+M_heave = HS2D * TPmask  # m
 
 # Wave acceptance for selected cfg
 HsLim2D_sel = xr.DataArray(Hs_limit_tp_sel, dims=["tp_bin"]).broadcast_like(prob)
-I_wave_sel  = (HS2D <= HsLim2D_sel).astype(float)
+I_wave_sel = (HS2D <= HsLim2D_sel).astype(float)
 
 # Heave acceptance
 I_heave = (M_heave <= heave_limit).astype(float)
@@ -476,7 +487,7 @@ I_heave = (M_heave <= heave_limit).astype(float)
 E_heave = (prob * M_heave).sum(dim=("hs_bin","tp_bin"))  # (lat,lon)
 
 # Operabilities for selected cfg (%)
-P_heave = (prob * I_heave   ).sum(dim=("hs_bin","tp_bin")) * 100.0
+P_heave = (prob * I_heave ).sum(dim=("hs_bin","tp_bin")) * 100.0
 P_wave  = (prob * I_wave_sel).sum(dim=("hs_bin","tp_bin")) * 100.0
 P_both  = (prob * I_heave * I_wave_sel).sum(dim=("hs_bin","tp_bin")) * 100.0
 
@@ -485,31 +496,32 @@ P_both  = (prob * I_heave * I_wave_sel).sum(dim=("hs_bin","tp_bin")) * 100.0
 # -----------------------------
 P_dyn = None
 P_dyn_deep_share = None  # deep contribution (% of accepted dynamic operability)
+
 if draft_mode == "Dynamic: deep → shallow when Hs/Tp exceeded":
     try:
-        j_deep    = cfg_names.index(deep_cfg_name)
+        j_deep = cfg_names.index(deep_cfg_name)
         j_shallow = cfg_names.index(shallow_cfg_name)
     except ValueError:
         st.error("Deep/Shallow configuration names not found in CSV list.")
         j_deep = j_shallow = 0
 
     # Deep draft responses & limits
-    fTp_deep       = xr.DataArray(R_use[j_deep], dims=["tp_bin"])
-    M_heave_deep   = HS2D * fTp_deep.broadcast_like(prob)
-    HsLim2D_deep   = xr.DataArray(Hs_limit_by_cfg[deep_cfg_name], dims=["tp_bin"]).broadcast_like(prob)
-    I_wave_deep    = (HS2D <= HsLim2D_deep).astype(float)
-    I_heave_deep   = (M_heave_deep <= heave_limit).astype(float)
+    fTp_deep    = xr.DataArray(R_use[j_deep], dims=["tp_bin"])
+    M_heave_deep = HS2D * fTp_deep.broadcast_like(prob)
+    HsLim2D_deep = xr.DataArray(Hs_limit_by_cfg[deep_cfg_name], dims=["tp_bin"]).broadcast_like(prob)
+    I_wave_deep  = (HS2D <= HsLim2D_deep).astype(float)
+    I_heave_deep = (M_heave_deep <= heave_limit).astype(float)
 
     # Shallow draft responses & limits
-    fTp_shallow    = xr.DataArray(R_use[j_shallow], dims=["tp_bin"])
-    M_heave_sh     = HS2D * fTp_shallow.broadcast_like(prob)
-    HsLim2D_sh     = xr.DataArray(Hs_limit_by_cfg[shallow_cfg_name], dims=["tp_bin"]).broadcast_like(prob)
-    I_wave_sh      = (HS2D <= HsLim2D_sh).astype(float)
-    I_heave_sh     = (M_heave_sh <= heave_limit).astype(float)
+    fTp_shallow  = xr.DataArray(R_use[j_shallow], dims=["tp_bin"])
+    M_heave_sh   = HS2D * fTp_shallow.broadcast_like(prob)
+    HsLim2D_sh   = xr.DataArray(Hs_limit_by_cfg[shallow_cfg_name], dims=["tp_bin"]).broadcast_like(prob)
+    I_wave_sh    = (HS2D <= HsLim2D_sh).astype(float)
+    I_heave_sh   = (M_heave_sh <= heave_limit).astype(float)
 
     # Switching rule: stay deep if deep passes wave criterion; otherwise shallow.
-    I_wave_dyn   = xr.where(I_wave_deep == 1, I_wave_deep,  I_wave_sh)
-    I_heave_dyn  = xr.where(I_wave_deep == 1, I_heave_deep, I_heave_sh)
+    I_wave_dyn  = xr.where(I_wave_deep == 1, I_wave_deep, I_wave_sh)
+    I_heave_dyn = xr.where(I_wave_deep == 1, I_heave_deep, I_heave_sh)
 
     # Dynamic combined operability (%)
     P_dyn = (prob * I_wave_dyn * I_heave_dyn).sum(dim=("hs_bin","tp_bin")) * 100.0
@@ -529,7 +541,6 @@ if draft_mode == "Dynamic: deep → shallow when Hs/Tp exceeded":
     if same_cfg:
         st.warning("Deep and shallow selections are the SAME configuration — dynamic switching will have no effect.")
 
-    # Compare limit curves and heave-per-Hs curves
     try:
         same_limits = np.allclose(Hs_limit_by_cfg[deep_cfg_name], Hs_limit_by_cfg[shallow_cfg_name], rtol=1e-6, atol=1e-6)
     except Exception:
@@ -538,14 +549,13 @@ if draft_mode == "Dynamic: deep → shallow when Hs/Tp exceeded":
         same_heave = np.allclose(np.asarray(R_use[j_deep]), np.asarray(R_use[j_shallow]), rtol=1e-6, atol=1e-6)
     except Exception:
         same_heave = False
-
     if same_limits:
         st.info("Deep and shallow Hs/Tp limit curves are identical (check your per-configuration limits CSV).")
     if same_heave:
         st.info("Deep and shallow heave-per-Hs curves are identical (check your RMS-per-Hs CSV mapping).")
 
     # How often would deep actually fail the wave criterion? (probability mass)
-    deep_fail_prob = (prob * (1.0 - I_wave_deep)).sum(dim=("hs_bin","tp_bin"))  # (lat,lon), 0..1
+    deep_fail_prob  = (prob * (1.0 - I_wave_deep)).sum(dim=("hs_bin","tp_bin"))  # (lat,lon), 0..1
     deep_fail_share = float(deep_fail_prob.mean(dim=("lat3_bin","lon3_bin"), skipna=True))
     st.caption(f"Dynamic switch trigger (deep wave criterion fails): spatial-mean probability mass = {deep_fail_share*100:.2f}%")
 
@@ -562,7 +572,6 @@ metric_options = [
 if P_dyn is not None:
     metric_options.append("Operability: Dynamic deep→shallow (%)")
     metric_options.append("Dynamic: deep contribution share (%)")
-
 metric = st.sidebar.selectbox("Metric", metric_options)
 
 # Prep 2D arrays (ordered lon,lat for plotting)
@@ -577,8 +586,9 @@ heave2 = np.clip(heave2, None, heave_hi)
 p_heave2, latp, lonp = prep(P_heave)
 p_wave2,  latp, lonp = prep(P_wave)
 p_both2,  latp, lonp = prep(P_both)
+
 if P_dyn is not None:
-    p_dyn2, latp, lonp = prep(P_dyn)
+    p_dyn2,      latp, lonp = prep(P_dyn)
     deep_share2, latp, lonp = prep(P_dyn_deep_share)
 
 # -----------------------------
@@ -619,7 +629,6 @@ elif metric == "Operability: ALL limits (%)":
     filled = pct_levels_from(cbar_lower)
     contours = pct_contours_from(cbar_lower)
     ticks = pct_ticks_from(cbar_lower)
-
     if (P_dyn is not None) and (draft_mode.startswith("Dynamic")):
         plot_zoom(
             lonp, latp, p_dyn2,
@@ -649,7 +658,7 @@ elif metric == "Operability: Dynamic deep→shallow (%)" and P_dyn is not None:
 elif metric == "Dynamic: deep contribution share (%)" and (P_dyn_deep_share is not None):
     # Share map uses 0–100% full range
     levels_share = np.linspace(0, 100, 51)
-    ticks_share  = np.arange(0, 101, 10)
+    ticks_share = np.arange(0, 101, 10)
     plot_zoom(
         lonp, latp, deep_share2,
         f"Dynamic: deep contribution share (%) — accepted time ({deep_cfg_name} vs {shallow_cfg_name}){title_suffix}",
@@ -658,15 +667,16 @@ elif metric == "Dynamic: deep contribution share (%)" and (P_dyn_deep_share is n
     )
 
 st.caption(
-    mapping_note + "  |  " + limit_note +
-    f"  |  Colorbar lower bound: {cbar_lower:.0f}%  |  Dataset: {os.path.basename(used_path)}"
+    mapping_note + " "
+    + limit_note +
+    f" • Colorbar lower bound: {cbar_lower:.0f}%"
+    f" • Dataset: {os.path.basename(used_path)}"
 )
 
 # -----------------------------
 # Multi‑configuration operability comparison (table + bars)
 # -----------------------------
 st.markdown("## Operability comparison between all configurations")
-
 results = []
 for j, cfg_j in enumerate(cfg_names):
     fTp_j = xr.DataArray(R_use[j], dims=["tp_bin"])
@@ -683,8 +693,8 @@ for j, cfg_j in enumerate(cfg_names):
 
     # Scalar means (unweighted spatial mean)
     P_heave_j = float(P_heave_map.mean(dim=("lat3_bin","lon3_bin"), skipna=True))
-    P_wave_j  = float(P_wave_map.mean(dim=("lat3_bin","lon3_bin"),  skipna=True))
-    P_both_j  = float(P_both_map.mean(dim=("lat3_bin","lon3_bin"),  skipna=True))
+    P_wave_j  = float(P_wave_map.mean(dim=("lat3_bin","lon3_bin"), skipna=True))
+    P_both_j  = float(P_both_map.mean(dim=("lat3_bin","lon3_bin"), skipna=True))
 
     results.append({
         "Configuration": cfg_j,
@@ -700,8 +710,8 @@ st.markdown("### Operability comparison chart")
 fig, ax = plt.subplots(figsize=(10,5))
 x = np.arange(len(cfg_names)); w = 0.25
 ax.bar(x - w, df_ops["Heave-only (%)"], width=w, label="Heave-only")
-ax.bar(x,     df_ops["Wave-only (%)"],  width=w, label="Wave-only")
-ax.bar(x + w, df_ops["Combined (%)"],   width=w, label="Combined")
+ax.bar(x,      df_ops["Wave-only (%)"],  width=w, label="Wave-only")
+ax.bar(x + w,  df_ops["Combined (%)"],   width=w, label="Combined")
 ax.set_xticks(x); ax.set_xticklabels(cfg_names)
 ax.set_ylabel("Operability (%)"); ax.set_ylim(0, 100)
 ax.legend(); ax.grid(True, alpha=0.3)
@@ -716,11 +726,13 @@ st.markdown("## A vs B operability difference")
 def operability_maps_for_cfg(cfg_name):
     """Return the three operability maps (lat,lon) in %, for a given configuration name."""
     j = cfg_names.index(cfg_name)
-    fTp_j = xr.DataArray(R_use[j], dims=["tp_bin"])       # m/m
-    M_heave_j = HS2D * fTp_j.broadcast_like(prob)         # m
+    fTp_j = xr.DataArray(R_use[j], dims=["tp_bin"])  # m/m
+    M_heave_j = HS2D * fTp_j.broadcast_like(prob)    # m
     Hs_limit_tp_j = Hs_limit_by_cfg[cfg_name]
+
     I_wave_j  = (HS2D <= xr.DataArray(Hs_limit_tp_j, dims=["tp_bin"]).broadcast_like(prob)).astype(float)
     I_heave_j = (M_heave_j <= heave_limit).astype(float)
+
     P_heave_map = (prob * I_heave_j).sum(dim=("hs_bin","tp_bin")) * 100.0
     P_wave_map  = (prob * I_wave_j ).sum(dim=("hs_bin","tp_bin")) * 100.0
     P_both_map  = (prob * I_heave_j * I_wave_j).sum(dim=("hs_bin","tp_bin")) * 100.0
@@ -743,9 +755,42 @@ elif cmp_metric == "Operability: wave ≤ Hs/Tp limit (%)":
 else:
     A_map = P_both_A;  B_map = P_both_B;  metric_tag = "Wave ∩ Heave"
 
-# Prepare arrays for plotting (respect grid ordering)
-A_np, latp_cmp, lonp_cmp = to_numpy_sorted(A_map)
-B_np, _,        _        = to_numpy_sorted(B_map)
+# --- Only the shallow draft uses dynamic in A/B when conditions are met (deep side stays static) ---
+base_metric_tag = metric_tag  # keep a copy set above
+use_dynamic_in_cmp = (
+    draft_mode.startswith("Dynamic")
+    and (P_dyn is not None)
+    and (cmp_metric == "Operability: ALL limits (%)")
+)
+
+dyn_applied_to = None
+if use_dynamic_in_cmp:
+    # Apply override ONLY when comparing the selected deep vs shallow pair,
+    # and ONLY to the shallow side (15.75 m)
+    if (cfgA == shallow_cfg_name) and (cfgB == deep_cfg_name):
+        A_map = P_dyn            # A = dynamic deep→shallow
+        dyn_applied_to = "A"
+    elif (cfgB == shallow_cfg_name) and (cfgA == deep_cfg_name):
+        B_map = P_dyn            # B = dynamic deep→shallow
+        dyn_applied_to = "B"
+    else:
+        st.info(
+            "Dynamic override in A/B applies only when comparing the selected "
+            f"deep vs shallow drafts ({deep_cfg_name} vs {shallow_cfg_name})."
+        )
+
+# Titles: annotate only the dynamic side
+metric_tag_A = base_metric_tag
+metric_tag_B = base_metric_tag
+dynamic_tag  = f"Dynamic ({deep_cfg_name} → {shallow_cfg_name}) · Wave ∩ Heave"
+if dyn_applied_to == "A":
+    metric_tag_A = dynamic_tag
+elif dyn_applied_to == "B":
+    metric_tag_B = dynamic_tag
+
+# Prepare arrays for plotting (respect grid ordering) AFTER any dynamic override
+A_np,  latp_cmp, lonp_cmp = to_numpy_sorted(A_map)
+B_np,  _,        _        = to_numpy_sorted(B_map)
 D_np = B_np - A_np  # Δ in percentage points (pp): positive => B better than A
 
 # A and B maps with operability colorbar lower bound and jet_r
@@ -757,14 +802,14 @@ colA, colB = st.columns(2)
 with colA:
     plot_zoom(
         lonp_cmp, latp_cmp, A_np,
-        f"{cfgA} — {metric_tag}{title_suffix}",
+        f"{cfgA} — {metric_tag_A}{title_suffix}",
         filledA, contA, ticksA,
         cmap=CMAP_OPERABILITY, show_grid=show_grid
     )
 with colB:
     plot_zoom(
         lonp_cmp, latp_cmp, B_np,
-        f"{cfgB} — {metric_tag}{title_suffix}",
+        f"{cfgB} — {metric_tag_B}{title_suffix}",
         filledA, contA, ticksA,
         cmap=CMAP_OPERABILITY, show_grid=show_grid
     )
@@ -806,21 +851,26 @@ def plot_diff(lon, lat, data, title, levels):
     st.pyplot(fig, use_container_width=True)
 
 st.markdown("### Difference map (B − A)")
+diff_title_tag = base_metric_tag if dyn_applied_to is None else dynamic_tag
 plot_diff(
     lonp_cmp, latp_cmp, D_np,
-    f"Δ Operability (pp) — {metric_tag} — {cfgB} minus {cfgA}{title_suffix}",
+    f"Δ Operability (pp) — {diff_title_tag} — {cfgB} minus {cfgA}{title_suffix}",
     levels_diff
 )
 
 # Spatial means (unweighted); swap to area-weighted if desired
-A_mean = float(A_map.mean(dim=("lat3_bin","lon3_bin"), skipna=True))
-B_mean = float(B_map.mean(dim=("lat3_bin","lon3_bin"), skipna=True))
+A_mean = float(P_heave_A.mean(dim=("lat3_bin","lon3_bin"), skipna=True)) if cmp_metric == "Operability: heave ≤ limit (%)" else \
+         float(P_wave_A.mean(dim=("lat3_bin","lon3_bin"),  skipna=True)) if cmp_metric == "Operability: wave ≤ Hs/Tp limit (%)" else \
+         float(P_both_A.mean(dim=("lat3_bin","lon3_bin"),  skipna=True))
+B_mean = float(P_heave_B.mean(dim=("lat3_bin","lon3_bin"), skipna=True)) if cmp_metric == "Operability: heave ≤ limit (%)" else \
+         float(P_wave_B.mean(dim=("lat3_bin","lon3_bin"),  skipna=True)) if cmp_metric == "Operability: wave ≤ Hs/Tp limit (%)" else \
+         float(P_both_B.mean(dim=("lat3_bin","lon3_bin"),  skipna=True))
 D_mean = B_mean - A_mean
 
 st.markdown("### Spatial means (unweighted)")
 st.write(
-    f"- **{cfgA}**: {A_mean:.1f} %  \n"
-    f"- **{cfgB}**: {B_mean:.1f} %  \n"
+    f"- **{cfgA}**: {A_mean:.1f} % \n"
+    f"- **{cfgB}**: {B_mean:.1f} % \n"
     f"- **Δ (B − A)**: **{D_mean:.1f} pp**"
 )
 
