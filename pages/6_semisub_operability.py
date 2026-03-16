@@ -363,6 +363,73 @@ P_wave   = (prob * I_wave).sum(dim=("hs_bin","tp_bin")) * 100.0
 P_heave  = (prob * I_heave).sum(dim=("hs_bin","tp_bin")) * 100.0
 P_both   = (prob * I_wave * I_heave).sum(dim=("hs_bin","tp_bin")) * 100.0
 
+# ---------------------------------------------
+# Metric selector (same UX as MotionOperability)
+# ---------------------------------------------
+st.sidebar.subheader("Metric to show")
+metric = st.sidebar.selectbox(
+    "Metric",
+    [
+        "Expected heave (m)",
+        "Operability: heave ≤ limit (%)",
+        "Operability: wave ≤ Hs/Tp limit (%)",
+        "Operability: ALL limits (%)",
+    ],
+)
+
+# ---------------------------------------------
+# Prepare 2D arrays
+# ---------------------------------------------
+def prep(field):
+    arr = field.transpose("lat3_bin","lon3_bin").values
+    return to_sorted_lon_lat(arr, lat_c, lon_edges)
+
+# Compute 2D fields
+heave2, latp, lonp = prep(E_heave)
+heave_hi = np.nanpercentile(heave2, CLIP_PCT)
+heave2 = np.clip(heave2, None, heave_hi)
+
+p_heave2, latp, lonp = prep(P_heave)
+p_wave2,  latp, lonp = prep(P_wave)
+p_both2,  latp, lonp = prep(P_both)
+
+# ---------------------------------------------
+# Render map depending on selected metric
+# ---------------------------------------------
+if metric == "Expected heave (m)":
+    filled, contours, ticks = hs_levels_zoom(heave2)
+    plot_zoom(
+        lonp, latp, heave2,
+        f"Expected heave (m) — {cfg}{title_suffix}",
+        filled, contours, ticks,
+        cmap=BASE_CMAP, show_grid=show_grid
+    )
+
+elif metric == "Operability: heave ≤ limit (%)":
+    plot_zoom(
+        lonp, latp, p_heave2,
+        f"Operability (%) — Heave ≤ {heave_limit:.2f} m {title_suffix}",
+        pct_levels(), pct_ticks(), pct_ticks(),
+        cmap=BASE_CMAP, show_grid=show_grid
+    )
+
+elif metric == "Operability: wave ≤ Hs/Tp limit (%)":
+    plot_zoom(
+        lonp, latp, p_wave2,
+        f"Operability (%) — Wave (Hs/Tp) {title_suffix}",
+        pct_levels(), pct_ticks(), pct_ticks(),
+        cmap=BASE_CMAP, show_grid=show_grid
+    )
+
+elif metric == "Operability: ALL limits (%)":
+    plot_zoom(
+        lonp, latp, p_both2,
+        f"Operability (%) — Wave ∩ Heave — {cfg}{title_suffix}",
+        pct_levels(), pct_ticks(), pct_ticks(),
+        cmap=BASE_CMAP, show_grid=show_grid
+    )
+
+
 # -----------------------------
 # Prepare arrays for plotting
 # -----------------------------
