@@ -12,14 +12,9 @@ import pandas as pd
 import xarray as xr
 import streamlit as st
 import matplotlib.pyplot as plt
-import cartopy  # ensure env var is honored before data fetches
+import cartopy  # to ensure environment var is honored before data fetches
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
-
-# NEW: land-mask imports
-from cartopy.io import shapereader
-import shapely
-import shapely.vectorized
 
 # -----------------------------
 # Environment & Page setup
@@ -35,7 +30,7 @@ st.title("Semisub — Heave Response & Operability (North Sea)")
 # Constants
 # -----------------------------
 ZOOM_EXTENT = [-13, 35, 52, 76]
-FEATURE_SCALE = "110m"        # lighter than "10m" for faster cold starts
+FEATURE_SCALE = "50m"        # lighter data than "10m" for faster cold starts
 BASE_CMAP_CONT = "turbo"      # continuous fields (e.g., expected heave)
 CMAP_OPERABILITY = "jet_r"    # operability maps (reversed jet)
 CLIP_PCT = 99.6
@@ -78,35 +73,6 @@ def normalize_pdf(prob):
     tot = prob.sum(dim=("hs_bin","tp_bin"))
     return xr.where(tot > 0, prob/tot, 0)
 
-# -----------------------------
-# Land mask utilities (Natural Earth -> vectorized mask)
-# -----------------------------
-@st.cache_resource
-def _load_land_geometries(resolution="110m"):
-    shp = shapereader.natural_earth(resolution, "physical", "land")
-    reader = shapereader.Reader(shp)
-    # Return a list of Shapely geometries (Polygons/MultiPolygons)
-    return list(reader.geometries())
-
-def apply_land_mask(lon_1d, lat_1d, data_2d, resolution="110m"):
-    """
-    Sets data values to NaN wherever grid point lies on land.
-    lon_1d: (nlon,), lat_1d: (nlat,), data_2d: (nlat, nlon)
-    """
-    geoms = _load_land_geometries(resolution)
-    Lon2D, Lat2D = np.meshgrid(lon_1d, lat_1d)
-    masked = np.array(data_2d, copy=True)
-
-    # Build a cumulative mask over all land geometries
-    land_mask = np.zeros(masked.shape, dtype=bool)
-    for geom in geoms:
-        # shapely.vectorized.contains supports Polygon/MultiPolygon
-        land_mask |= shapely.vectorized.contains(geom, Lon2D, Lat2D)
-
-    # Set land cells to NaN
-    masked[land_mask] = np.nan
-    return masked
-
 # Percent helpers (static)
 def pct_ticks():
     return np.arange(0, 101, 10)
@@ -138,19 +104,13 @@ def hs_levels_zoom(arr):
     contours = np.arange(np.floor(vmin/0.2)*0.2, np.ceil(vmax/0.2)*0.2 + 1e-12, 0.2)
     return filled, contours, contours
 
-# -----------------------------
-# Plot helpers (with land masking)
-# -----------------------------
 def plot_zoom(lon, lat, data, title, filled, contours, ticks, cmap=BASE_CMAP_CONT, show_grid=True):
-    # Apply land mask
-    data_masked = apply_land_mask(lon, lat, data, resolution=FEATURE_SCALE)
-
     fig = plt.figure(figsize=(14, 6), dpi=160)
     ax = plt.axes(projection=ccrs.PlateCarree())
-    cf = ax.contourf(lon, lat, data_masked, levels=filled, cmap=cmap, extend="both",
+    cf = ax.contourf(lon, lat, data, levels=filled, cmap=cmap, extend="both",
                      transform=ccrs.PlateCarree(), zorder=1)
     try:
-        cs = ax.contour(lon, lat, data_masked, levels=contours, colors="black", linewidths=0.45,
+        cs = ax.contour(lon, lat, data, levels=contours, colors="black", linewidths=0.45,
                         transform=ccrs.PlateCarree(), zorder=2)
         ax.figure.canvas.draw()
         ax.clabel(cs, fontsize=6, inline=True, inline_spacing=1, fmt="%g", rightside_up=True)
@@ -582,10 +542,11 @@ if draft_mode == "Dynamic: deep → shallow when Hs/Tp exceeded":
         np.nan
     )  # (lat,lon) in %
 
-    # Diagnostics
+    # ---- Diagnostics: why dynamic may look unchanged ----
     same_cfg = (deep_cfg_name == shallow_cfg_name)
     if same_cfg:
         st.warning("Deep and shallow selections are the SAME configuration — dynamic switching will have no effect.")
+
     try:
         same_limits = np.allclose(Hs_limit_by_cfg[deep_cfg_name], Hs_limit_by_cfg[shallow_cfg_name], rtol=1e-6, atol=1e-6)
     except Exception:
@@ -599,7 +560,8 @@ if draft_mode == "Dynamic: deep → shallow when Hs/Tp exceeded":
     if same_heave:
         st.info("Deep and shallow heave-per-Hs curves are identical (check your RMS-per-Hs CSV mapping).")
 
-    deep_fail_prob  = (prob * (1.0 - I_wave_deep)).sum(dim=("hs_bin","tp_bin"))
+    # How often would deep actually fail the wave criterion? (probability mass)
+    deep_fail_prob  = (prob * (1.0 - I_wave_deep)).sum(dim=("hs_bin","tp_bin"))  # (lat,lon), 0..1
     deep_fail_share = float(deep_fail_prob.mean(dim=("lat3_bin","lon3_bin"), skipna=True))
     st.caption(f"Dynamic switch trigger (deep wave criterion fails): spatial-mean probability mass = {deep_fail_share*100:.2f}%")
 
@@ -636,7 +598,7 @@ if P_dyn is not None:
     deep_share2, latp, lonp = prep(P_dyn_deep_share)
 
 # -----------------------------
-# Render map depending on metric (all via plot_zoom which masks land)
+# Render map depending on metric
 # -----------------------------
 if metric == "Expected heave (m)":
     filled, contours, ticks = hs_levels_zoom(heave2)
@@ -700,6 +662,7 @@ elif metric == "Operability: Dynamic deep→shallow (%)" and P_dyn is not None:
     )
 
 elif metric == "Dynamic: deep contribution share (%)" and (P_dyn_deep_share is not None):
+    # Share map uses 0–100% full range
     levels_share = np.linspace(0, 100, 51)
     ticks_share = np.arange(0, 101, 10)
     plot_zoom(
@@ -831,12 +794,12 @@ if dyn_applied_to == "A":
 elif dyn_applied_to == "B":
     metric_tag_B = dynamic_tag
 
-# Prepare arrays for plotting AFTER any dynamic override
+# Prepare arrays for plotting (respect grid ordering) AFTER any dynamic override
 A_np,  latp_cmp, lonp_cmp = to_numpy_sorted(A_map)
 B_np,  _,        _        = to_numpy_sorted(B_map)
 D_np = B_np - A_np  # Δ in percentage points (pp): positive => B better than A
 
-# A/B maps (render via plot_zoom which masks land)
+# A and B maps with operability colorbar lower bound and jet_r
 filledA = pct_levels_from(cbar_lower)
 contA   = pct_contours_from(cbar_lower)
 ticksA  = pct_ticks_from(cbar_lower)
@@ -865,17 +828,14 @@ levels_diff = np.linspace(vmin, vmax, n_lev)
 cmap_diff = "coolwarm"
 
 def plot_diff(lon, lat, data, title, levels):
-    # Apply land mask for the diff map as well
-    data_masked = apply_land_mask(lon, lat, data, resolution=FEATURE_SCALE)
-
     fig = plt.figure(figsize=(14, 6), dpi=160)
     ax = plt.axes(projection=ccrs.PlateCarree())
-    cf = ax.contourf(lon, lat, data_masked, levels=levels, cmap=cmap_diff, extend="both",
+    cf = ax.contourf(lon, lat, data, levels=levels, cmap=cmap_diff, extend="both",
                      transform=ccrs.PlateCarree(), zorder=1)
     try:
         step = max(5, int((levels[-1] - levels[0]) / 10))
         contour_levels = np.arange(np.round(levels[0]/step)*step, np.round(levels[-1]/step)*step + step, step)
-        cs = ax.contour(lon, lat, data_masked, levels=contour_levels, colors="black", linewidths=0.45,
+        cs = ax.contour(lon, lat, data, levels=contour_levels, colors="black", linewidths=0.45,
                         transform=ccrs.PlateCarree(), zorder=2)
         ax.figure.canvas.draw()
         ax.clabel(cs, fontsize=6, inline=True, inline_spacing=1, fmt="%g", rightside_up=True)
