@@ -166,7 +166,7 @@ tp_edges = ds["tp_edges"].values
 lat_edges = ds["lat3_edges"].values
 lon_edges = ds["lon3_edges"].values
 
-units = str(ds["hs_edges"].attrs.get("units","")).lower()
+units = str(ds["hs_edges"].attrs.get("units",""))).lower()
 if "cm" in units or (np.nanmax(hs_edges) > 50 and "m" not in units):
     hs_edges = hs_edges / 100.0
 
@@ -512,7 +512,7 @@ if draft_mode == "Dynamic: deep → shallow when Hs/Tp exceeded":
     # Dynamic combined operability (%)
     P_dyn = (prob * I_wave_dyn * I_heave_dyn).sum(dim=("hs_bin","tp_bin")) * 100.0
 
-# ---- Diagnostics: why dynamic may look unchanged ----
+    # ---- Diagnostics: why dynamic may look unchanged ----
     same_cfg = (deep_cfg_name == shallow_cfg_name)
     if same_cfg:
         st.warning("Deep and shallow selections are the SAME configuration — dynamic switching will have no effect.")
@@ -536,7 +536,6 @@ if draft_mode == "Dynamic: deep → shallow when Hs/Tp exceeded":
     deep_fail_prob = (prob * (1.0 - I_wave_deep)).sum(dim=("hs_bin","tp_bin"))  # (lat,lon), 0..1
     deep_fail_share = float(deep_fail_prob.mean(dim=("lat3_bin","lon3_bin"), skipna=True))
     st.caption(f"Dynamic switch trigger (deep wave criterion fails): spatial-mean probability mass = {deep_fail_share*100:.2f}%")
-
 
 # -----------------------------
 # Metric selector (as in MotionOperability)
@@ -602,7 +601,6 @@ elif metric == "Operability: wave ≤ Hs/Tp limit (%)":
         cmap=CMAP_OPERABILITY, show_grid=show_grid
     )
 
-
 elif metric == "Operability: ALL limits (%)":
     filled = pct_levels_from(cbar_lower)
     contours = pct_contours_from(cbar_lower)
@@ -622,7 +620,6 @@ elif metric == "Operability: ALL limits (%)":
             filled, contours, ticks,
             cmap=CMAP_OPERABILITY, show_grid=show_grid
         )
-
 
 elif metric == "Operability: Dynamic deep→shallow (%)" and P_dyn is not None:
     filled = pct_levels_from(cbar_lower)
@@ -731,15 +728,15 @@ filledA = pct_levels_from(cbar_lower)
 contA   = pct_contours_from(cbar_lower)
 ticksA  = pct_ticks_from(cbar_lower)
 
-cols = st.columns(2)
-with cols[0]:
+colA, colB = st.columns(2)
+with colA:
     plot_zoom(
         lonp_cmp, latp_cmp, A_np,
         f"{cfgA} — {metric_tag}{title_suffix}",
         filledA, contA, ticksA,
         cmap=CMAP_OPERABILITY, show_grid=show_grid
     )
-with cols[1]:
+with colB:
     plot_zoom(
         lonp_cmp, latp_cmp, B_np,
         f"{cfgB} — {metric_tag}{title_suffix}",
