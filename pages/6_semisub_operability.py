@@ -1,6 +1,21 @@
 # -*- coding: utf-8 -*-
-# 06_Semisub_HeaveOperability.py — North Sea: Heave response & operability for semisub
-# Safe ASCII edition: explicit UTF-8 header, no emojis, no curly quotes, no long dashes.
+# 06_Semisub_HeaveOperability.py — North Sea: Heave response & operability from "RMS response per meter Hs" vs Tp
+# Input CSV (robust):
+#   Row with TP headers: TP1, TP2, ..., TPn   (n≈21)
+#   First column = Hull alternative   (A, B, ...)
+#   Data = RMS response per meter Hs (m heave per m Hs) for each TP
+#   Optional: a row with actual "Tp [s]" centers to enable precise interpolation
+#
+# Outputs (North Sea zoom only):
+#   • Expected heave map [m]
+#   • Operability (%) — Wave-only (Hs/Tp limit)
+#   • Operability (%) — Heave-only (Hs*f(Tp) <= heave_limit)
+#   • Operability (%) — Wave ∩ Heave
+#
+# Notes:
+#  - UTF-8 header included; ASCII-only code (no curly quotes) to avoid copy/paste parse errors
+#  - Same plotting style and North Sea extent as your Metocean page
+#  - Icons kept minimal to avoid encoding issues
 
 import os
 import re
@@ -15,7 +30,7 @@ import cartopy.feature as cfeature
 # -----------------------------
 # Page setup
 # -----------------------------
-st.set_page_config(page_title="Semisub Heave & Operability (NS)", layout="wide", page_icon="⚓")
+st.set_page_config(page_title="Semisub: Heave & Operability (North Sea)", layout="wide", page_icon="⚓")
 st.title("Semisub — Heave Response & Operability (North Sea)")
 
 # -----------------------------
@@ -33,7 +48,7 @@ NS_CANDIDATES = [
 ]
 
 # -----------------------------
-# Helpers
+# Helpers (I/O, grids, plotting)
 # -----------------------------
 @st.cache_resource
 def load_nc(paths):
@@ -62,8 +77,8 @@ def to_sorted_lon_lat(field2d, lat_c, lon_edges):
     return field2d[:, j_sort], lat_c, lon_uns[j_sort]
 
 def normalize_pdf(prob):
-    tot = prob.sum(dim=("hs_bin", "tp_bin"))
-    return xr.where(tot > 0, prob / tot, 0)
+    tot = prob.sum(dim=("hs_bin","tp_bin"))
+    return xr.where(tot > 0, prob/tot, 0)
 
 def pct_ticks(): return np.arange(0, 101, 10)
 def pct_levels(): return np.linspace(0, 100, 61)
@@ -104,7 +119,7 @@ def plot_zoom(lon, lat, data, title, filled, contours, ticks, cmap=BASE_CMAP, sh
     st.pyplot(fig, use_container_width=True)
 
 # -----------------------------
-# Load dataset (regional NS)
+# Load North Sea dataset
 # -----------------------------
 try:
     ds, used_path = load_nc(NS_CANDIDATES)
@@ -112,7 +127,7 @@ except Exception as e:
     st.error(f"Failed to load NS dataset: {e}")
     st.stop()
 
-for k in ["prob", "hs_edges", "tp_edges", "lat3_edges", "lon3_edges"]:
+for k in ["prob","hs_edges","tp_edges","lat3_edges","lon3_edges"]:
     if k not in ds:
         st.error(f"Dataset missing {k}")
         st.stop()
@@ -122,34 +137,34 @@ tp_edges = ds["tp_edges"].values
 lat_edges = ds["lat3_edges"].values
 lon_edges = ds["lon3_edges"].values
 
-units = str(ds["hs_edges"].attrs.get("units", "")).lower()
+# Hs units
+units = str(ds["hs_edges"].attrs.get("units","")).lower()
 if "cm" in units or (np.nanmax(hs_edges) > 50 and "m" not in units):
     hs_edges = hs_edges / 100.0
 
-hs_c  = bin_centers(hs_edges)
-tp_c  = bin_centers(tp_edges)
+hs_c  = bin_centers(hs_edges)    # (hs_bin)
+tp_c  = bin_centers(tp_edges)    # (tp_bin)
 lat_c = bin_centers(lat_edges)
 lon_c = unwrap_lon_centers_from_edges(lon_edges)
 
 # -----------------------------
-# Sidebar
+# Sidebar controls
 # -----------------------------
 with st.sidebar:
     st.subheader("Aggregation")
-    mode = st.radio("Use", ["By month", "Annual"], horizontal=True)
+    mode = st.radio("Use", ["By month","Annual"], horizontal=True)
     months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
-    month_vals = np.arange(1, 13)
+    month_vals = np.arange(1,13)
     month_label = st.selectbox("Month", months, index=0)
     month_idx = dict(zip(months, month_vals))[month_label]
 
-    st.subheader("Wave acceptance (Hs/Tp)")
+    st.subheader("Wave acceptance (Hs/Tp limit)")
     limit_mode = st.radio("Limit mode", ["Single Hcrit", "Hs limit per Tp (CSV)"], index=1)
     Hcrit = st.number_input("Hs threshold (m)", min_value=0.1, max_value=15.0, value=3.5, step=0.1)
     limit_csv = st.file_uploader("Upload Hs/Tp limit curve CSV", type=["csv"], key="hs_tp_limit_csv")
 
-    st.subheader("Heave input (choose one)")
-    csv_type = st.selectbox("CSV contains", ["Per-location heave map", "Heave RAO(Tp) per configuration"], index=0)
-    heave_csv = st.file_uploader("Upload heave CSV", type=["csv"], key="heave_csv")
+    st.subheader("Heave per meter Hs CSV")
+    heave_csv = st.file_uploader("Upload RMS response per meter Hs (by TP)", type=["csv"], key="heave_per_hs_csv")
 
     st.subheader("Heave acceptance")
     heave_limit = st.number_input("Heave limit (m)", min_value=0.1, max_value=20.0, value=3.0, step=0.1)
@@ -158,7 +173,7 @@ with st.sidebar:
     show_grid = st.checkbox("Show grid points", True)
 
 # -----------------------------
-# Probabilities on hs,tp,y,x
+# Select probability field
 # -----------------------------
 if mode == "By month":
     prob = ds["prob"].sel(month=month_idx)
@@ -166,13 +181,12 @@ if mode == "By month":
 else:
     prob = ds["prob"].sum(dim="month")
     title_suffix = " — Annual"
-prob = normalize_pdf(prob)
+prob = normalize_pdf(prob)  # dims: hs_bin, tp_bin, lat3_bin, lon3_bin
 
 HS = xr.DataArray(hs_c, dims=["hs_bin"])
-TP = xr.DataArray(tp_c, dims=["tp_bin"])
 
 # -----------------------------
-# Build Hs_limit(Tp)
+# Build Hs_limit(Tp) from CSV or constant
 # -----------------------------
 def build_hs_limit(tp_centers, mode, Hcrit, csv_file):
     if mode == "Single Hcrit" or (csv_file is None):
@@ -205,172 +219,178 @@ def build_hs_limit(tp_centers, mode, Hcrit, csv_file):
     return hs_interp
 
 Hs_limit_tp = build_hs_limit(tp_c, limit_mode, Hcrit, limit_csv)  # (tp_bin,)
-
-# Wave acceptance mask: 1 if Hs <= Hs_limit(Tp)
 Hs_limit_1D = xr.DataArray(Hs_limit_tp, dims=["tp_bin"])
-HS2D = HS.broadcast_like(prob)
-HsLim2D = Hs_limit_1D.broadcast_like(prob)
-I_wave = (HS2D <= HsLim2D).astype(float)
 
 # -----------------------------
-# Heave input parsing
+# Parse "RMS response per meter Hs" CSV
 # -----------------------------
-def parse_heave_map(uploaded_csv):
-    # Columns: lat, lon, config, heave_sig_m (case-insensitive)
-    try:
-        df = pd.read_csv(uploaded_csv)
-    except UnicodeDecodeError:
-        df = pd.read_csv(uploaded_csv, encoding="latin-1")
-    cols = {c.lower().strip(): c for c in df.columns}
-    need = ["lat", "lon", "config", "heave_sig_m"]
-    for n in need:
-        if n not in cols:
-            st.error(f"Heave map CSV must contain: {need}")
-            st.stop()
-    la = pd.to_numeric(df[cols["lat"]], errors="coerce").astype(float).values
-    lo = pd.to_numeric(df[cols["lon"]], errors="coerce").astype(float).values
-    cfg = df[cols["config"]].astype(str).str.strip().values
-    hv  = pd.to_numeric(df[cols["heave_sig_m"]], errors="coerce").astype(float).values
-    ok = np.isfinite(la) & np.isfinite(lo) & np.isfinite(hv)
-    la, lo, cfg, hv = la[ok], lo[ok], cfg[ok], hv[ok]
-    i_lat = np.abs(la[:, None] - lat_c[None, :]).argmin(axis=1)
-    i_lon = np.abs(lo[:, None] - lon_c[None, :]).argmin(axis=1)
-    configs = sorted(np.unique(cfg))
-    maps = {}
-    ny, nx = len(lat_c), len(lon_c)
-    for c in configs:
-        arr = np.full((ny, nx), np.nan, dtype=float)
-        sel = (cfg == c)
-        # average duplicates per cell
-        acc = {}
-        cnt = {}
-        for ii, jj, v in zip(i_lat[sel], i_lon[sel], hv[sel]):
-            k = (ii, jj)
-            acc[k] = acc.get(k, 0.0) + v
-            cnt[k] = cnt.get(k, 0) + 1
-        for (ii, jj), s in acc.items():
-            arr[ii, jj] = s / cnt[(ii, jj)]
-        maps[c] = arr
-    return configs, maps
-
-def parse_heave_rao(uploaded_csv):
+def parse_heave_per_hs(uploaded_csv):
+    """
+    Expected layout (robust):
+      - One row contains many TPk labels (TP1, TP2, ..., TPn) -> this is the header row.
+      - First column under that header contains hull names.
+      - Data cells are RMS response per meter Hs for each TP.
+      - Optional: a row where first text contains 'Tp' and the following cells are numeric Tp centers [s].
+    Returns:
+      configs: list[str]
+      R_csv:   2D array [config, n_csv]  (heave_per_Hs vs TPk)
+      tp_csv:  1D array [n_csv] of Tp centers in seconds if found, else None
+    """
     df_raw = pd.read_csv(uploaded_csv, header=None)
-    header_tp = df_raw.iloc[1, 2:].tolist()
-    def tpkey(s):
-        m = re.search(r"(\d+)$", str(s))
-        return int(m.group(1)) if m else 0
-    tp_labels = sorted(header_tp, key=tpkey)
-    records = []
-    for i in range(2, len(df_raw)):
-        row = df_raw.iloc[i]
-        alt = row.iloc[0]
-        var = row.iloc[1]
-        vals = row.iloc[2:2+len(tp_labels)].tolist()
-        if pd.isna(alt) and pd.isna(var):
-            continue
-        rec = {"Config": str(alt) if not pd.isna(alt) else None,
-               "Var":    str(var) if not pd.isna(var) else None}
-        for k, v in zip(tp_labels, vals):
-            rec[k] = v
-        records.append(rec)
-    df = pd.DataFrame(records)
-    df["Config"] = df["Config"].ffill().astype(str).str.strip()
-    df["Var"]    = df["Var"].astype(str).str.strip()
-    heave_df = df[df["Var"].str.contains("heave", case=False)]
-    if heave_df.empty:
-        st.error("RAO CSV must include a row where Var contains 'heave'.")
+    # Find the header row with many TPk tokens
+    header_row_idx = None
+    header_labels = None
+    for i in range(min(6, len(df_raw))):  # search first few rows
+        row = df_raw.iloc[i].astype(str).tolist()
+        tps = [c.strip() for c in row if re.match(r"^TP\d+$", c.strip(), flags=re.IGNORECASE)]
+        if len(tps) >= 3:  # likely header
+            header_row_idx = i
+            header_labels = tps
+            break
+    if header_row_idx is None:
+        # Fallback: assume second row holds TP1..TPn
+        header_row_idx = 1
+        row = df_raw.iloc[header_row_idx].astype(str).tolist()
+        header_labels = [c.strip() for c in row if re.match(r"^TP\d+$", c.strip(), flags=re.IGNORECASE)]
+    if not header_labels:
+        st.error("Could not locate 'TP1..TPn' header row in CSV.")
         st.stop()
-    configs = heave_df["Config"].drop_duplicates().tolist()
-    def mat_from(df_alt):
-        mats = []
-        for cfg in configs:
-            row = df_alt[df_alt["Config"] == cfg][tp_labels]
-            mats.append(row.iloc[0].astype(float).to_numpy())
-        return np.vstack(mats)
-    R_heave_csv = mat_from(heave_df)
-    n_csv = R_heave_csv.shape[1]
-    # Optional Tp centers row
-    tp_centers_csv = None
-    tp_df = df[df["Var"].str.contains("tp", case=False)]
-    if not tp_df.empty:
-        try:
-            tp_centers_csv = tp_df.iloc[0][tp_labels].astype(float).to_numpy()
-        except Exception:
-            tp_centers_csv = None
-    def interp_rows(M, x_from, x_to):
-        return np.vstack([np.interp(x_to, x_from, r) for r in M])
-    if len(tp_c) == n_csv:
-        R_heave = R_heave_csv
-        note = f"TP mapping: 1:1 ({n_csv} bins)."
-    elif tp_centers_csv is not None:
-        R_heave = interp_rows(R_heave_csv, tp_centers_csv, tp_c)
-        note = "TP mapping: interpolated from CSV Tp centers."
-    else:
-        k = np.arange(1, n_csv+1)
-        tp_min, tp_max = float(tp_c.min()), float(tp_c.max())
-        x_from = tp_min + ((k - 0.5)/n_csv) * (tp_max - tp_min)
-        R_heave = interp_rows(R_heave_csv, x_from, tp_c)
-        note = "TP mapping: ordinal."
-    return configs, R_heave, note
 
-# -----------------------------
-# Build maps
-# -----------------------------
-prob_hstp = prob
-Hs_limit_1D = xr.DataArray(Hs_limit_tp, dims=["tp_bin"])
-HS2D = HS.broadcast_like(prob_hstp)
-HsLim2D = Hs_limit_1D.broadcast_like(prob_hstp)
-I_wave = (HS2D <= HsLim2D).astype(float)
+    # Identify the TP columns by index in that row
+    hdr_series = df_raw.iloc[header_row_idx].astype(str)
+    tp_col_indices = [j for j, v in enumerate(hdr_series) if re.match(r"^TP\d+$", v.strip(), flags=re.IGNORECASE)]
+    n_csv = len(tp_col_indices)
+    if n_csv < 3:
+        st.error("Found fewer than 3 TP columns; please check the CSV.")
+        st.stop()
+
+    # Read data rows below header until a blank line or non-numeric block
+    data_rows = []
+    for i in range(header_row_idx + 1, len(df_raw)):
+        row = df_raw.iloc[i]
+        # first column: hull name (string), unless row holds Tp centers
+        first_cell = str(row.iloc[0]).strip()
+        if first_cell == "" or first_cell.lower().startswith("tp"):
+            continue
+        vals = []
+        ok = True
+        for j in tp_col_indices:
+            try:
+                v = float(row.iloc[j])
+            except Exception:
+                ok = False
+                break
+            vals.append(v)
+        if ok:
+            data_rows.append((first_cell, vals))
+    if not data_rows:
+        st.error("No hull rows found under TP header in CSV.")
+        st.stop()
+
+    configs = [name for name, _ in data_rows]
+    R_csv = np.vstack([np.array(vals, dtype=float) for _, vals in data_rows])  # [config, n_csv]
+
+    # Optional: try to find a row with Tp centers [s]
+    tp_centers_csv = None
+    for i in range(header_row_idx + 1, len(df_raw)):
+        first_cell = str(df_raw.iloc[i, 0]).strip().lower()
+        if first_cell.startswith("tp"):
+            # collect numeric values in the TP columns
+            vals = []
+            for j in tp_col_indices:
+                try:
+                    vals.append(float(df_raw.iloc[i, j]))
+                except Exception:
+                    vals.append(np.nan)
+            arr = np.array(vals, dtype=float)
+            if np.isfinite(arr).sum() >= 3:
+                tp_centers_csv = arr
+            break
+
+    return configs, R_csv, tp_centers_csv
 
 if heave_csv is None:
-    st.info("Upload a heave CSV to proceed.")
+    st.info("Upload the 'RMS response per meter Hs' CSV to proceed.")
     st.stop()
 
-if csv_type == "Per-location heave map":
-    cfg_names, heave_map_by_cfg = parse_heave_map(heave_csv)
-    if not cfg_names:
-        st.error("No configurations found in heave map CSV.")
-        st.stop()
-    cfg = st.selectbox("Configuration", cfg_names, index=0)
-    heave_map = heave_map_by_cfg[cfg]
-    heave2, latp, lonp = to_sorted_lon_lat(heave_map, lat_c, lon_edges)
-    hi = np.nanpercentile(heave2, CLIP_PCT)
-    heave2 = np.clip(heave2, None, hi)
-    filled, contours, ticks = hs_levels_zoom(heave2)
-    plot_zoom(lonp, latp, heave2, f"Significant heave (m) — {cfg}", filled, contours, ticks, cmap=BASE_CMAP, show_grid=show_grid)
-    P_wave = (prob_hstp * I_wave).sum(dim=("hs_bin","tp_bin")) * 100.0
-    oper_wave = P_wave.transpose("lat3_bin","lon3_bin").values
-    opw, latp, lonp = to_sorted_lon_lat(oper_wave, lat_c, lon_edges)
-    plot_zoom(lonp, latp, opw, f"Operability (%) — Wave-only {title_suffix}", pct_levels(), pct_ticks(), pct_ticks(), cmap=BASE_CMAP, show_grid=show_grid)
-    st.info("To compute wave ∩ heave operability, upload a Heave RAO(Tp) CSV.")
+cfg_names, R_heave_per_Hs_csv, tp_centers_csv = parse_heave_per_hs(heave_csv)
+n_csv = R_heave_per_Hs_csv.shape[1]
+
+# -----------------------------
+# Map CSV TP bins to dataset TP bins
+# -----------------------------
+def interp_rows(M, x_from, x_to):
+    return np.vstack([np.interp(x_to, x_from, r) for r in M])
+
+if len(tp_c) == n_csv:
+    R_use = R_heave_per_Hs_csv  # 1:1 mapping
+    mapping_note = f"TP mapping: 1:1 ({n_csv} bins)."
+elif tp_centers_csv is not None and np.isfinite(tp_centers_csv).sum() >= 3:
+    R_use = interp_rows(R_heave_per_Hs_csv, tp_centers_csv, tp_c)
+    mapping_note = "TP mapping: interpolated from CSV Tp centers."
 else:
-    cfg_names, R_heave_all, mapping_note = parse_heave_rao(heave_csv)
-    if not cfg_names:
-        st.error("No configurations found in RAO CSV.")
-        st.stop()
-    cfg = st.selectbox("Configuration", cfg_names, index=0)
-    i_cfg = cfg_names.index(cfg)
-    RAO_heave = xr.DataArray(R_heave_all[i_cfg], dims=["tp_bin"])
-    M_heave = HS * RAO_heave
-    E_heave = (prob_hstp * M_heave).sum(dim=("hs_bin","tp_bin"))
-    heave_map = E_heave.transpose("lat3_bin","lon3_bin").values
-    I_heave = (M_heave <= heave_limit).astype(float)
-    P_two = (prob_hstp * I_wave * I_heave).sum(dim=("hs_bin","tp_bin")) * 100.0
-    oper_two = P_two.transpose("lat3_bin","lon3_bin").values
-    P_wave = (prob_hstp * I_wave).sum(dim=("hs_bin","tp_bin")) * 100.0
-    oper_wave = P_wave.transpose("lat3_bin","lon3_bin").values
+    # Ordinal mapping across dataset Tp range
+    k = np.arange(1, n_csv+1)
+    tp_min, tp_max = float(tp_c.min()), float(tp_c.max())
+    x_from = tp_min + ((k - 0.5)/n_csv) * (tp_max - tp_min)
+    R_use = interp_rows(R_heave_per_Hs_csv, x_from, tp_c)
+    mapping_note = "TP mapping: ordinal across dataset Tp range."
 
-    heave2, latp, lonp = to_sorted_lon_lat(heave_map, lat_c, lon_edges)
-    hi = np.nanpercentile(heave2, CLIP_PCT)
-    heave2 = np.clip(heave2, None, hi)
-    filled, contours, ticks = hs_levels_zoom(heave2)
-    plot_zoom(lonp, latp, heave2, f"Expected heave (m) — {cfg} {title_suffix}", filled, contours, ticks, cmap=BASE_CMAP, show_grid=show_grid)
+# Pick configuration
+cfg = st.selectbox("Hull alternative", cfg_names, index=0)
+i_cfg = cfg_names.index(cfg)
+fTp = xr.DataArray(R_use[i_cfg], dims=["tp_bin"])  # heave per meter Hs vs Tp (m/m)
 
-    op2, latp, lonp = to_sorted_lon_lat(oper_two, lat_c, lon_edges)
-    plot_zoom(lonp, latp, op2, f"Operability (%) — Wave ∩ Heave — {cfg} {title_suffix}", pct_levels(), pct_ticks(), pct_ticks(), cmap=BASE_CMAP, show_grid=show_grid)
+# -----------------------------
+# Build acceptance masks and expected heave
+# -----------------------------
+HS2D = xr.DataArray(hs_c, dims=["hs_bin"]).broadcast_like(prob)
+TPmask = fTp.broadcast_like(prob)  # (hs,tp,y,x) along tp
+M_heave = HS2D * TPmask            # heave per sea state
 
-    opw, latp, lonp = to_sorted_lon_lat(oper_wave, lat_c, lon_edges)
-    plot_zoom(lonp, latp, opw, f"Operability (%) — Wave-only {title_suffix}", pct_levels(), pct_ticks(), pct_ticks(), cmap=BASE_CMAP, show_grid=show_grid)
+# Wave acceptance: Hs <= Hs_limit(Tp)
+HsLim2D = xr.DataArray(Hs_limit_tp, dims=["tp_bin"]).broadcast_like(prob)
+I_wave = (HS2D <= HsLim2D).astype(float)
 
-    if mapping_note:
-        st.caption(mapping_note)
+# Heave acceptance: Hs*f(Tp) <= heave_limit
+I_heave = (M_heave <= heave_limit).astype(float)
+
+# Expected heave [m]
+E_heave = (prob * M_heave).sum(dim=("hs_bin","tp_bin"))  # (y,x)
+
+# Operabilities [%]
+P_wave   = (prob * I_wave).sum(dim=("hs_bin","tp_bin")) * 100.0
+P_heave  = (prob * I_heave).sum(dim=("hs_bin","tp_bin")) * 100.0
+P_both   = (prob * I_wave * I_heave).sum(dim=("hs_bin","tp_bin")) * 100.0
+
+# -----------------------------
+# Prepare arrays for plotting
+# -----------------------------
+def prep_2d(field):
+    arr = field.transpose("lat3_bin","lon3_bin").values
+    return to_sorted_lon_lat(arr, lat_c, lon_edges)
+
+# Expected heave
+heave2, latp, lonp = prep_2d(E_heave)
+hi = np.nanpercentile(heave2, CLIP_PCT)
+heave2 = np.clip(heave2, None, hi)
+filled_h, cont_h, ticks_h = hs_levels_zoom(heave2)
+plot_zoom(lonp, latp, heave2, f"Expected heave (m) — {cfg}{title_suffix}", filled_h, cont_h, ticks_h, cmap=BASE_CMAP, show_grid=show_grid)
+
+# Heave-only operability
+phev2, latp, lonp = prep_2d(P_heave)
+plot_zoom(lonp, latp, phev2, f"Operability (%) — Heave-only (heave <= {heave_limit:.2f} m){title_suffix}",
+          pct_levels(), pct_ticks(), pct_ticks(), cmap=BASE_CMAP, show_grid=show_grid)
+
+# Wave-only operability
+pwav2, latp, lonp = prep_2d(P_wave)
+plot_zoom(lonp, latp, pwav2, f"Operability (%) — Wave-only (Hs/Tp limit){title_suffix}",
+          pct_levels(), pct_ticks(), pct_ticks(), cmap=BASE_CMAP, show_grid=show_grid)
+
+# Combined
+pboth2, latp, lonp = prep_2d(P_both)
+plot_zoom(lonp, latp, pboth2, f"Operability (%) — Wave ∩ Heave — {cfg}{title_suffix}",
+          pct_levels(), pct_ticks(), pct_ticks(), cmap=BASE_CMAP, show_grid=show_grid)
+
+# Mapping note
+st.caption(mapping_note)
