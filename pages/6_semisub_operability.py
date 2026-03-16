@@ -306,6 +306,11 @@ def build_single_curve(tp_centers, csv_file, fallback_val):
     order = np.argsort(tp_in)
     return np.interp(tp_centers, tp_in[order], hs_in[order], left=hs_in[order][0], right=hs_in[order][-1])
 
+
+def pct_levels_50():
+    return np.linspace(50, 100, 51)  # 50–100%
+
+
 def parse_limits_per_config(csv_file, cfg_names, tp_centers, fallback_val):
     """
     CSV format:
@@ -446,12 +451,36 @@ p_both2,  latp, lonp = prep(P_both)
 if metric == "Expected heave (m)":
     filled, contours, ticks = hs_levels_zoom(heave2)
     plot_zoom(lonp, latp, heave2, f"Expected heave (m) — {cfg}{title_suffix}", filled, contours, ticks, cmap=BASE_CMAP_CONT, show_grid=show_grid)
+
 elif metric == "Operability: heave ≤ limit (%)":
-    plot_zoom(lonp, latp, p_heave2, f"Operability (%) — Heave ≤ {heave_limit:.2f} m{title_suffix}", pct_levels(), pct_ticks(), pct_ticks(), cmap=CMAP_OPERABILITY, show_grid=show_grid)
+    plot_zoom(
+        lonp, latp, p_heave2,
+        f"Operability (%) — Heave ≤ {heave_limit:.2f} m{title_suffix}",
+        pct_levels_50(), pct_ticks(), pct_ticks(),
+        cmap="jet_r",
+        show_grid=show_grid
+    )
+
+
 elif metric == "Operability: wave ≤ Hs/Tp limit (%)":
-    plot_zoom(lonp, latp, p_wave2,  "Operability (%) — Wave (Hs/Tp limit)"+title_suffix, pct_levels(), pct_ticks(), pct_ticks(), cmap=CMAP_OPERABILITY, show_grid=show_grid)
+    plot_zoom(
+        lonp, latp, p_wave2,
+        "Operability (%) — Wave (Hs/Tp limit)" + title_suffix,
+        pct_levels_50(), pct_ticks(), pct_ticks(),
+        cmap="jet_r",
+        show_grid=show_grid
+    )
+
+
 else:  # ALL limits
-    plot_zoom(lonp, latp, p_both2,  f"Operability (%) — Wave ∩ Heave — {cfg}{title_suffix}", pct_levels(), pct_ticks(), pct_ticks(), cmap=CMAP_OPERABILITY, show_grid=show_grid)
+    plot_zoom(
+        lonp, latp, p_both2,
+        f"Operability (%) — Wave ∩ Heave — {cfg}{title_suffix}",
+        pct_levels_50(), pct_ticks(), pct_ticks(),
+        cmap="jet_r",
+        show_grid=show_grid
+    )
+
 
 st.caption(mapping_note + "  |  " + limit_note)
 
