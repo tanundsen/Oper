@@ -166,7 +166,7 @@ tp_edges = ds["tp_edges"].values
 lat_edges = ds["lat3_edges"].values
 lon_edges = ds["lon3_edges"].values
 
-units = str(ds["hs_edges"].attrs.get("units",""))).lower()
+units = str(ds["hs_edges"].attrs.get("units","")).lower()
 if "cm" in units or (np.nanmax(hs_edges) > 50 and "m" not in units):
     hs_edges = hs_edges / 100.0
 
