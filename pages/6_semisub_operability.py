@@ -308,7 +308,7 @@ def build_single_curve(tp_centers, csv_file, fallback_val):
 
 
 def pct_levels_50():
-    return np.linspace(50, 100, 51)  # 50–100%
+    return np.linspace(70, 100, 31)  # 50–100%
 
 
 def parse_limits_per_config(csv_file, cfg_names, tp_centers, fallback_val):
