@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 # 06_Semisub_HeaveOperability.py — North Sea: Heave response & operability from
-# "RMS response per meter Hs" vs Tp, with per‑configuration Hs/Tp limits support and A/B diff.
+# "RMS response per meter Hs" vs Tp, with per‑configuration Hs/Tp limits support, A/B diff,
+# and Dynamic Draft Switching (deep 17.75 m -> shallow 15.75 m when Hs/Tp exceeded).
 
 import os
 import re
@@ -138,6 +139,13 @@ def plot_hs_tp_curve(tp_vals, hs_limits, system_name, note_text=None):
     if note_text:
         ax.text(0.01, 0.02, note_text, transform=ax.transAxes, fontsize=7, va="bottom", ha="left", alpha=0.8)
     st.pyplot(fig)
+
+def default_index_for_substring(names, substr, fallback_idx):
+    s = substr.lower()
+    for i, n in enumerate(names):
+        if s in str(n).lower():
+            return i
+    return fallback_idx
 
 # -----------------------------
 # Load dataset (regional)
@@ -400,7 +408,7 @@ else:
     limit_note = "Wave limit: per-configuration Hs/Tp curves from CSV (fallback to Hcrit if missing)."
 
 # -----------------------------
-# Sidebar (part 2: A/B comparison controls — now that cfg_names exist)
+# Sidebar (part 2: A/B + Dynamic draft controls — now that cfg_names exist)
 # -----------------------------
 with st.sidebar:
     st.subheader("Two‑config comparison")
@@ -420,6 +428,21 @@ with st.sidebar:
                               help="Keeps negative and positive ranges symmetric around 0.")
     diff_absmax = st.slider("Max |Δ| for colorbar (pp)", 5, 50, 20, 1,
                             help="Sets ±range for the difference map in percentage points.")
+
+    st.subheader("Draft strategy")
+    draft_mode = st.radio(
+        "Draft mode",
+        [
+            "Use selected configuration only",
+            "Dynamic: deep → shallow when Hs/Tp exceeded"
+        ],
+        index=0
+    )
+    # Let the user select which CSV rows correspond to deep and shallow drafts.
+    deep_default    = default_index_for_substring(cfg_names, "17.75", 0)
+    shallow_default = default_index_for_substring(cfg_names, "15.75", min(1, len(cfg_names)-1))
+    deep_cfg_name = st.selectbox("Deep-draft configuration", cfg_names, index=deep_default, key="deep_cfg")
+    shallow_cfg_name = st.selectbox("Shallow-draft configuration", cfg_names, index=shallow_default, key="shallow_cfg")
 
 # -----------------------------
 # Compute fields for SELECTED configuration (main UX)
@@ -451,24 +474,58 @@ I_heave = (M_heave <= heave_limit).astype(float)
 # Expected heave
 E_heave = (prob * M_heave).sum(dim=("hs_bin","tp_bin"))  # (lat,lon)
 
-# Operabilities (%)
+# Operabilities for selected cfg (%)
 P_heave = (prob * I_heave   ).sum(dim=("hs_bin","tp_bin")) * 100.0
 P_wave  = (prob * I_wave_sel).sum(dim=("hs_bin","tp_bin")) * 100.0
 P_both  = (prob * I_heave * I_wave_sel).sum(dim=("hs_bin","tp_bin")) * 100.0
 
 # -----------------------------
+# Dynamic draft switching (deep -> shallow when Hs/Tp exceeded)
+# -----------------------------
+P_dyn = None  # will remain None if not using dynamic mode
+if draft_mode == "Dynamic: deep → shallow when Hs/Tp exceeded":
+    try:
+        j_deep    = cfg_names.index(deep_cfg_name)
+        j_shallow = cfg_names.index(shallow_cfg_name)
+    except ValueError:
+        st.error("Deep/Shallow configuration names not found in CSV list.")
+        j_deep = j_shallow = 0
+
+    # Deep draft responses & limits
+    fTp_deep       = xr.DataArray(R_use[j_deep], dims=["tp_bin"])
+    M_heave_deep   = HS2D * fTp_deep.broadcast_like(prob)
+    HsLim2D_deep   = xr.DataArray(Hs_limit_by_cfg[deep_cfg_name], dims=["tp_bin"]).broadcast_like(prob)
+    I_wave_deep    = (HS2D <= HsLim2D_deep).astype(float)
+    I_heave_deep   = (M_heave_deep <= heave_limit).astype(float)
+
+    # Shallow draft responses & limits
+    fTp_shallow    = xr.DataArray(R_use[j_shallow], dims=["tp_bin"])
+    M_heave_sh     = HS2D * fTp_shallow.broadcast_like(prob)
+    HsLim2D_sh     = xr.DataArray(Hs_limit_by_cfg[shallow_cfg_name], dims=["tp_bin"]).broadcast_like(prob)
+    I_wave_sh      = (HS2D <= HsLim2D_sh).astype(float)
+    I_heave_sh     = (M_heave_sh <= heave_limit).astype(float)
+
+    # Switching rule: stay deep if deep passes wave criterion; otherwise shallow.
+    I_wave_dyn   = xr.where(I_wave_deep == 1, I_wave_deep,  I_wave_sh)
+    I_heave_dyn  = xr.where(I_wave_deep == 1, I_heave_deep, I_heave_sh)
+
+    # Dynamic combined operability (%)
+    P_dyn = (prob * I_wave_dyn * I_heave_dyn).sum(dim=("hs_bin","tp_bin")) * 100.0
+
+# -----------------------------
 # Metric selector (as in MotionOperability)
 # -----------------------------
 st.sidebar.subheader("Metric to show")
-metric = st.sidebar.selectbox(
-    "Metric",
-    [
-        "Expected heave (m)",
-        "Operability: heave ≤ limit (%)",
-        "Operability: wave ≤ Hs/Tp limit (%)",
-        "Operability: ALL limits (%)",
-    ],
-)
+metric_options = [
+    "Expected heave (m)",
+    "Operability: heave ≤ limit (%)",
+    "Operability: wave ≤ Hs/Tp limit (%)",
+    "Operability: ALL limits (%)",
+]
+if P_dyn is not None:
+    metric_options.append("Operability: Dynamic deep→shallow (%)")
+
+metric = st.sidebar.selectbox("Metric", metric_options)
 
 # Prep 2D arrays (ordered lon,lat for plotting)
 def prep(field):
@@ -482,6 +539,8 @@ heave2 = np.clip(heave2, None, heave_hi)
 p_heave2, latp, lonp = prep(P_heave)
 p_wave2,  latp, lonp = prep(P_wave)
 p_both2,  latp, lonp = prep(P_both)
+if P_dyn is not None:
+    p_dyn2, latp, lonp = prep(P_dyn)
 
 # -----------------------------
 # Render map depending on metric
@@ -517,7 +576,7 @@ elif metric == "Operability: wave ≤ Hs/Tp limit (%)":
         cmap=CMAP_OPERABILITY, show_grid=show_grid
     )
 
-else:  # ALL limits
+elif metric == "Operability: ALL limits (%)":
     filled = pct_levels_from(cbar_lower)
     contours = pct_contours_from(cbar_lower)
     ticks = pct_ticks_from(cbar_lower)
@@ -528,7 +587,21 @@ else:  # ALL limits
         cmap=CMAP_OPERABILITY, show_grid=show_grid
     )
 
-st.caption(mapping_note + "  |  " + limit_note + f"  |  Colorbar lower bound: {cbar_lower:.0f}%")
+elif metric == "Operability: Dynamic deep→shallow (%)" and P_dyn is not None:
+    filled = pct_levels_from(cbar_lower)
+    contours = pct_contours_from(cbar_lower)
+    ticks = pct_ticks_from(cbar_lower)
+    plot_zoom(
+        lonp, latp, p_dyn2,
+        f"Operability (%) — Dynamic draft switching ({deep_cfg_name} → {shallow_cfg_name}){title_suffix}",
+        filled, contours, ticks,
+        cmap=CMAP_OPERABILITY, show_grid=show_grid
+    )
+
+st.caption(
+    mapping_note + "  |  " + limit_note +
+    f"  |  Colorbar lower bound: {cbar_lower:.0f}%  |  Dataset: {os.path.basename(used_path)}"
+)
 
 # -----------------------------
 # Multi‑configuration operability comparison (table + bars)
@@ -616,7 +689,7 @@ A_np, latp_cmp, lonp_cmp = to_numpy_sorted(A_map)
 B_np, _,        _        = to_numpy_sorted(B_map)
 D_np = B_np - A_np  # Δ in percentage points (pp): positive => B better than A
 
-# Show A and B maps with your operability lower-bound colorbar and jet_r
+# A and B maps with operability colorbar lower bound and jet_r
 filledA = pct_levels_from(cbar_lower)
 contA   = pct_contours_from(cbar_lower)
 ticksA  = pct_ticks_from(cbar_lower)
@@ -680,7 +753,7 @@ plot_diff(
     levels_diff
 )
 
-# Spatial means (unweighted); can switch to area-weighted if desired
+# Spatial means (unweighted); swap to area-weighted if desired
 A_mean = float(A_map.mean(dim=("lat3_bin","lon3_bin"), skipna=True))
 B_mean = float(B_map.mean(dim=("lat3_bin","lon3_bin"), skipna=True))
 D_mean = B_mean - A_mean
