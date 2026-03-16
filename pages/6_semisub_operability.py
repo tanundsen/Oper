@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # 06_Semisub_HeaveOperability.py — North Sea: Heave response & operability from
-# "RMS response per meter Hs" vs Tp, with per‑configuration Hs/Tp limits support.
+# "RMS response per meter Hs" vs Tp, with per‑configuration Hs/Tp limits support and A/B diff.
 
 import os
 import re
@@ -23,8 +23,8 @@ st.title("Semisub — Heave Response & Operability (North Sea)")
 # -----------------------------
 ZOOM_EXTENT = [-13, 35, 52, 76]
 FEATURE_SCALE = "10m"
-BASE_CMAP_CONT = "turbo"    # continuous fields (e.g., expected heave)
-CMAP_OPERABILITY = "jet_r"  # operability maps (reversed jet)
+BASE_CMAP_CONT = "turbo"     # continuous fields (e.g., expected heave)
+CMAP_OPERABILITY = "jet_r"   # operability maps (reversed jet)
 CLIP_PCT = 99.6
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -66,28 +66,25 @@ def normalize_pdf(prob):
     tot = prob.sum(dim=("hs_bin","tp_bin"))
     return xr.where(tot > 0, prob/tot, 0)
 
-# Percent helpers (generic)
-def pct_ticks(): 
+# Percent helpers (static)
+def pct_ticks():
     return np.arange(0, 101, 10)
 
-def pct_levels(): 
+def pct_levels():
     return np.linspace(0, 100, 61)
 
-# Dynamic percent helpers (respect lower bound)
+# Percent helpers respecting a lower bound
 def pct_levels_from(lo):
     lo = float(lo)
-    # 1%-step levels from lo to 100
-    n = int(max(1, np.floor(100 - lo))) + 1
+    n = int(max(1, np.floor(100 - lo))) + 1  # 1%-step levels
     return np.linspace(lo, 100, n)
 
 def pct_contours_from(lo):
-    # contour lines every 10% starting from the next 10% step >= lo
     start = int(np.ceil(lo / 10.0) * 10)
     start = min(start, 100)
     return np.arange(start, 101, 10)
 
 def pct_ticks_from(lo):
-    # ticks at lower bound (even if not on a 10% step) + decade ticks to 100
     base = np.arange(0, 101, 10)
     ticks = np.unique(np.concatenate(([float(lo)], base)))
     return ticks[ticks >= lo]
@@ -171,7 +168,7 @@ lat_c = bin_centers(lat_edges)
 lon_c = unwrap_lon_centers_from_edges(lon_edges)
 
 # -----------------------------
-# Sidebar
+# Sidebar (part 1: generic)
 # -----------------------------
 with st.sidebar:
     st.subheader("Aggregation")
@@ -182,7 +179,6 @@ with st.sidebar:
     month_idx = dict(zip(months, month_vals))[month_label]
 
     st.subheader("Wave acceptance (Hs/Tp limit)")
-    # Three modes: single constant; single curve CSV; per-config curves CSV
     limit_mode = st.radio(
         "Limit mode",
         ["Single Hcrit", "Single Hs/Tp curve (CSV)", "Per-configuration Hs/Tp limits (CSV)"],
@@ -202,7 +198,6 @@ with st.sidebar:
     show_grid = st.checkbox("Show grid points", True)
 
     st.subheader("Colorbar")
-    # Keep at most 95% to avoid degenerate range (needs min<max)
     cbar_lower = st.slider("Operability colorbar lower limit (%)", min_value=0, max_value=95, value=50, step=1,
                            help="Sets the lower bound of the operability colorbar. Data are NOT clipped; colors span [lower, 100].")
 
@@ -405,7 +400,29 @@ else:
     limit_note = "Wave limit: per-configuration Hs/Tp curves from CSV (fallback to Hcrit if missing)."
 
 # -----------------------------
-# Compute fields for a SELECTED configuration (MotionOperability UX)
+# Sidebar (part 2: A/B comparison controls — now that cfg_names exist)
+# -----------------------------
+with st.sidebar:
+    st.subheader("Two‑config comparison")
+    cfgA = st.selectbox("Config A", cfg_names, index=0, key="cmpA")
+    cfgB = st.selectbox("Config B", cfg_names, index=min(1, len(cfg_names)-1), key="cmpB")
+    cmp_metric = st.selectbox(
+        "Metric for comparison",
+        [
+            "Operability: heave ≤ limit (%)",
+            "Operability: wave ≤ Hs/Tp limit (%)",
+            "Operability: ALL limits (%)",
+        ],
+        index=2,
+        help="This metric is used for the A vs B difference map."
+    )
+    zero_center = st.checkbox("Zero‑center difference color scale", True,
+                              help="Keeps negative and positive ranges symmetric around 0.")
+    diff_absmax = st.slider("Max |Δ| for colorbar (pp)", 5, 50, 20, 1,
+                            help="Sets ±range for the difference map in percentage points.")
+
+# -----------------------------
+# Compute fields for SELECTED configuration (main UX)
 # -----------------------------
 cfg = st.selectbox("Hull alternative", cfg_names, index=0)
 i_cfg = cfg_names.index(cfg)
@@ -417,16 +434,16 @@ with curve_col:
     plot_hs_tp_curve(tp_c, Hs_limit_tp_sel, cfg, note_text=limit_note)
 
 # Heave per meter Hs vs Tp (for selected cfg)
-fTp = xr.DataArray(R_use[i_cfg], dims=["tp_bin"])       # m/m
+fTp = xr.DataArray(R_use[i_cfg], dims=["tp_bin"])  # m/m
 
 # Sea-state heave magnitude
-HS2D = xr.DataArray(hs_c, dims=["hs_bin"]).broadcast_like(prob)
+HS2D   = xr.DataArray(hs_c, dims=["hs_bin"]).broadcast_like(prob)
 TPmask = fTp.broadcast_like(prob)
-M_heave = HS2D * TPmask                                  # m
+M_heave = HS2D * TPmask                            # m
 
 # Wave acceptance for selected cfg
 HsLim2D_sel = xr.DataArray(Hs_limit_tp_sel, dims=["tp_bin"]).broadcast_like(prob)
-I_wave_sel = (HS2D <= HsLim2D_sel).astype(float)
+I_wave_sel  = (HS2D <= HsLim2D_sel).astype(float)
 
 # Heave acceptance
 I_heave = (M_heave <= heave_limit).astype(float)
@@ -434,7 +451,7 @@ I_heave = (M_heave <= heave_limit).astype(float)
 # Expected heave
 E_heave = (prob * M_heave).sum(dim=("hs_bin","tp_bin"))  # (lat,lon)
 
-# Operabilities
+# Operabilities (%)
 P_heave = (prob * I_heave   ).sum(dim=("hs_bin","tp_bin")) * 100.0
 P_wave  = (prob * I_wave_sel).sum(dim=("hs_bin","tp_bin")) * 100.0
 P_both  = (prob * I_heave * I_wave_sel).sum(dim=("hs_bin","tp_bin")) * 100.0
@@ -453,7 +470,7 @@ metric = st.sidebar.selectbox(
     ],
 )
 
-# Prep 2D arrays
+# Prep 2D arrays (ordered lon,lat for plotting)
 def prep(field):
     arr = field.transpose("lat3_bin","lon3_bin").values
     return to_sorted_lon_lat(arr, lat_c, lon_edges)
@@ -514,7 +531,7 @@ else:  # ALL limits
 st.caption(mapping_note + "  |  " + limit_note + f"  |  Colorbar lower bound: {cbar_lower:.0f}%")
 
 # -----------------------------
-# Multi‑configuration operability comparison (uses each cfg's own Hs/Tp curve)
+# Multi‑configuration operability comparison (table + bars)
 # -----------------------------
 st.markdown("## Operability comparison between all configurations")
 
@@ -523,7 +540,6 @@ for j, cfg_j in enumerate(cfg_names):
     fTp_j = xr.DataArray(R_use[j], dims=["tp_bin"])
     M_heave_j = HS2D * fTp_j.broadcast_like(prob)
 
-    # per‑cfg wave limit
     Hs_limit_tp_j = Hs_limit_by_cfg[cfg_j]
     I_wave_j  = (HS2D <= xr.DataArray(Hs_limit_tp_j, dims=["tp_bin"]).broadcast_like(prob)).astype(float)
     I_heave_j = (M_heave_j <= heave_limit).astype(float)
@@ -533,7 +549,7 @@ for j, cfg_j in enumerate(cfg_names):
     P_wave_map  = (prob * I_wave_j ).sum(dim=("hs_bin","tp_bin")) * 100.0
     P_both_map  = (prob * I_heave_j * I_wave_j).sum(dim=("hs_bin","tp_bin")) * 100.0
 
-    # Reduce to scalars via spatial mean (unweighted); could switch to area-weighted if desired
+    # Scalar means (unweighted spatial mean)
     P_heave_j = float(P_heave_map.mean(dim=("lat3_bin","lon3_bin"), skipna=True))
     P_wave_j  = float(P_wave_map.mean(dim=("lat3_bin","lon3_bin"),  skipna=True))
     P_both_j  = float(P_both_map.mean(dim=("lat3_bin","lon3_bin"),  skipna=True))
@@ -558,3 +574,132 @@ ax.set_xticks(x); ax.set_xticklabels(cfg_names)
 ax.set_ylabel("Operability (%)"); ax.set_ylim(0, 100)
 ax.legend(); ax.grid(True, alpha=0.3)
 st.pyplot(fig)
+
+# -----------------------------
+# A vs B operability comparison (maps + difference)
+# -----------------------------
+st.markdown("---")
+st.markdown("## A vs B operability difference")
+
+def operability_maps_for_cfg(cfg_name):
+    """Return the three operability maps (lat,lon) in %, for a given configuration name."""
+    j = cfg_names.index(cfg_name)
+    fTp_j = xr.DataArray(R_use[j], dims=["tp_bin"])       # m/m
+    M_heave_j = HS2D * fTp_j.broadcast_like(prob)         # m
+    Hs_limit_tp_j = Hs_limit_by_cfg[cfg_name]
+    I_wave_j  = (HS2D <= xr.DataArray(Hs_limit_tp_j, dims=["tp_bin"]).broadcast_like(prob)).astype(float)
+    I_heave_j = (M_heave_j <= heave_limit).astype(float)
+    P_heave_map = (prob * I_heave_j).sum(dim=("hs_bin","tp_bin")) * 100.0
+    P_wave_map  = (prob * I_wave_j ).sum(dim=("hs_bin","tp_bin")) * 100.0
+    P_both_map  = (prob * I_heave_j * I_wave_j).sum(dim=("hs_bin","tp_bin")) * 100.0
+    return P_heave_map, P_wave_map, P_both_map
+
+def to_numpy_sorted(field_da):
+    """(lat,lon) DataArray -> numpy array + sorted lat/lon for plotting with existing helpers."""
+    arr = field_da.transpose("lat3_bin","lon3_bin").values
+    return to_sorted_lon_lat(arr, lat_c, lon_edges)
+
+# Compute A & B maps
+P_heave_A, P_wave_A, P_both_A = operability_maps_for_cfg(cfgA)
+P_heave_B, P_wave_B, P_both_B = operability_maps_for_cfg(cfgB)
+
+# Pick metric
+if cmp_metric == "Operability: heave ≤ limit (%)":
+    A_map = P_heave_A; B_map = P_heave_B; metric_tag = f"Heave ≤ {heave_limit:.2f} m"
+elif cmp_metric == "Operability: wave ≤ Hs/Tp limit (%)":
+    A_map = P_wave_A;  B_map = P_wave_B;  metric_tag = "Wave (Hs/Tp limit)"
+else:
+    A_map = P_both_A;  B_map = P_both_B;  metric_tag = "Wave ∩ Heave"
+
+# Prepare arrays for plotting (respect grid ordering)
+A_np, latp_cmp, lonp_cmp = to_numpy_sorted(A_map)
+B_np, _,        _        = to_numpy_sorted(B_map)
+D_np = B_np - A_np  # Δ in percentage points (pp): positive => B better than A
+
+# Show A and B maps with your operability lower-bound colorbar and jet_r
+filledA = pct_levels_from(cbar_lower)
+contA   = pct_contours_from(cbar_lower)
+ticksA  = pct_ticks_from(cbar_lower)
+
+cols = st.columns(2)
+with cols[0]:
+    plot_zoom(
+        lonp_cmp, latp_cmp, A_np,
+        f"{cfgA} — {metric_tag}{title_suffix}",
+        filledA, contA, ticksA,
+        cmap=CMAP_OPERABILITY, show_grid=show_grid
+    )
+with cols[1]:
+    plot_zoom(
+        lonp_cmp, latp_cmp, B_np,
+        f"{cfgB} — {metric_tag}{title_suffix}",
+        filledA, contA, ticksA,
+        cmap=CMAP_OPERABILITY, show_grid=show_grid
+    )
+
+# Difference map (B - A), diverging colormap, optional zero-centering
+vmax = float(diff_absmax)
+vmin = -vmax if zero_center else float(np.nanmin(D_np))
+n_lev = 41
+levels_diff = np.linspace(vmin, vmax, n_lev)
+cmap_diff = "coolwarm"
+
+def plot_diff(lon, lat, data, title, levels):
+    fig = plt.figure(figsize=(14, 6), dpi=200)
+    ax = plt.axes(projection=ccrs.PlateCarree())
+    cf = ax.contourf(lon, lat, data, levels=levels, cmap=cmap_diff, extend="both",
+                     transform=ccrs.PlateCarree(), zorder=1)
+    try:
+        step = max(5, int((levels[-1] - levels[0]) / 10))
+        contour_levels = np.arange(np.round(levels[0]/step)*step, np.round(levels[-1]/step)*step + step, step)
+        cs = ax.contour(lon, lat, data, levels=contour_levels, colors="black", linewidths=0.45,
+                        transform=ccrs.PlateCarree(), zorder=2)
+        ax.figure.canvas.draw()
+        ax.clabel(cs, fontsize=6, inline=True, inline_spacing=1, fmt="%g", rightside_up=True)
+    except Exception:
+        pass
+    ax.add_feature(cfeature.LAND.with_scale(FEATURE_SCALE), facecolor="lightgray", edgecolor="none", zorder=10)
+    ax.add_feature(cfeature.COASTLINE.with_scale(FEATURE_SCALE), linewidth=0.7, zorder=11)
+    ax.add_feature(cfeature.BORDERS.with_scale(FEATURE_SCALE), linewidth=0.3, zorder=12)
+    ax.set_extent(ZOOM_EXTENT, crs=ccrs.PlateCarree())
+    if show_grid:
+        Lon2D, Lat2D = np.meshgrid(lon, lat)
+        ax.scatter(Lon2D.ravel(), Lat2D.ravel(), s=6, color="gray", alpha=0.6,
+                   transform=ccrs.PlateCarree(), zorder=3)
+    cb = plt.colorbar(cf, ax=ax, shrink=0.75, aspect=30, pad=0.01)
+    cb.set_label(title + " [pp]")
+    cb.ax.tick_params(labelsize=8)
+    ax.set_title(title)
+    plt.subplots_adjust(left=0.02, right=0.97, top=0.93, bottom=0.06)
+    st.pyplot(fig, use_container_width=True)
+
+st.markdown("### Difference map (B − A)")
+plot_diff(
+    lonp_cmp, latp_cmp, D_np,
+    f"Δ Operability (pp) — {metric_tag} — {cfgB} minus {cfgA}{title_suffix}",
+    levels_diff
+)
+
+# Spatial means (unweighted); can switch to area-weighted if desired
+A_mean = float(A_map.mean(dim=("lat3_bin","lon3_bin"), skipna=True))
+B_mean = float(B_map.mean(dim=("lat3_bin","lon3_bin"), skipna=True))
+D_mean = B_mean - A_mean
+
+st.markdown("### Spatial means (unweighted)")
+st.write(
+    f"- **{cfgA}**: {A_mean:.1f} %  \n"
+    f"- **{cfgB}**: {B_mean:.1f} %  \n"
+    f"- **Δ (B − A)**: **{D_mean:.1f} pp**"
+)
+
+# Compact bar chart
+st.markdown("### A vs B (means)")
+fig2, ax2 = plt.subplots(figsize=(5.5, 3.2))
+ax2.bar([0, 1, 2], [A_mean, B_mean, D_mean], color=["tab:blue", "tab:orange", "tab:green"])
+ax2.set_xticks([0, 1, 2]); ax2.set_xticklabels([cfgA, cfgB, "Δ(B−A)"])
+ax2.set_ylabel("Operability / Δ [%, pp]")
+ymin = min(0, A_mean, B_mean, D_mean) - 5
+ymax = max(100, A_mean, B_mean, D_mean) + 5
+ax2.set_ylim(ymin, ymax)
+ax2.grid(True, axis="y", alpha=0.3)
+st.pyplot(fig2)
