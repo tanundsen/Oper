@@ -30,7 +30,7 @@ st.title("Semisub — Heave Response & Operability (North Sea)")
 # Constants
 # -----------------------------
 ZOOM_EXTENT = [-13, 35, 52, 76]
-FEATURE_SCALE = "50m"        # lighter data than "10m" for faster cold starts
+FEATURE_SCALE = "30m"        # lighter data than "10m" for faster cold starts
 BASE_CMAP_CONT = "turbo"      # continuous fields (e.g., expected heave)
 CMAP_OPERABILITY = "jet_r"    # operability maps (reversed jet)
 CLIP_PCT = 99.6
