@@ -512,6 +512,32 @@ if draft_mode == "Dynamic: deep → shallow when Hs/Tp exceeded":
     # Dynamic combined operability (%)
     P_dyn = (prob * I_wave_dyn * I_heave_dyn).sum(dim=("hs_bin","tp_bin")) * 100.0
 
+# ---- Diagnostics: why dynamic may look unchanged ----
+    same_cfg = (deep_cfg_name == shallow_cfg_name)
+    if same_cfg:
+        st.warning("Deep and shallow selections are the SAME configuration — dynamic switching will have no effect.")
+
+    # Compare limit curves and heave-per-Hs curves
+    try:
+        same_limits = np.allclose(Hs_limit_by_cfg[deep_cfg_name], Hs_limit_by_cfg[shallow_cfg_name], rtol=1e-6, atol=1e-6)
+    except Exception:
+        same_limits = False
+    try:
+        same_heave = np.allclose(np.asarray(R_use[j_deep]), np.asarray(R_use[j_shallow]), rtol=1e-6, atol=1e-6)
+    except Exception:
+        same_heave = False
+
+    if same_limits:
+        st.info("Deep and shallow Hs/Tp limit curves are identical (check your per-configuration limits CSV).")
+    if same_heave:
+        st.info("Deep and shallow heave-per-Hs curves are identical (check your RMS-per-Hs CSV mapping).")
+
+    # How often would deep actually fail the wave criterion? (probability mass)
+    deep_fail_prob = (prob * (1.0 - I_wave_deep)).sum(dim=("hs_bin","tp_bin"))  # (lat,lon), 0..1
+    deep_fail_share = float(deep_fail_prob.mean(dim=("lat3_bin","lon3_bin"), skipna=True))
+    st.caption(f"Dynamic switch trigger (deep wave criterion fails): spatial-mean probability mass = {deep_fail_share*100:.2f}%")
+
+
 # -----------------------------
 # Metric selector (as in MotionOperability)
 # -----------------------------
@@ -576,16 +602,27 @@ elif metric == "Operability: wave ≤ Hs/Tp limit (%)":
         cmap=CMAP_OPERABILITY, show_grid=show_grid
     )
 
+
 elif metric == "Operability: ALL limits (%)":
     filled = pct_levels_from(cbar_lower)
     contours = pct_contours_from(cbar_lower)
     ticks = pct_ticks_from(cbar_lower)
-    plot_zoom(
-        lonp, latp, p_both2,
-        f"Operability (%) — Wave ∩ Heave — {cfg}{title_suffix}",
-        filled, contours, ticks,
-        cmap=CMAP_OPERABILITY, show_grid=show_grid
-    )
+
+    if (draft_mode.startswith("Dynamic")) and (P_dyn is not None):
+        plot_zoom(
+            lonp, latp, p_dyn2,
+            f"Operability (%) — Dynamic draft switching ({deep_cfg_name} → {shallow_cfg_name}){title_suffix}",
+            filled, contours, ticks,
+            cmap=CMAP_OPERABILITY, show_grid=show_grid
+        )
+    else:
+        plot_zoom(
+            lonp, latp, p_both2,
+            f"Operability (%) — Wave ∩ Heave — {cfg}{title_suffix}",
+            filled, contours, ticks,
+            cmap=CMAP_OPERABILITY, show_grid=show_grid
+        )
+
 
 elif metric == "Operability: Dynamic deep→shallow (%)" and P_dyn is not None:
     filled = pct_levels_from(cbar_lower)
