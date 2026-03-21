@@ -1,11 +1,10 @@
 # 01_Metocean.py — Metocean Explorer (3° global + 0.5° regionals + auto-fit extent)
 # ----------------------------------------------------------------------------------
-# NEW in this version
-# • Zoom region presets: North Sea, Mediterranean
-# • Mediterranean uses your 0.5° file: metocean_scatter_050deg_MED_monthclim.nc
-# • Auto-fit extent to actual finite data (with padding) to avoid blank maps
-# • Robust fallback when zoom subset is empty/NaN: never produces an empty contour
-# • Debug readouts: finite counts, min/max, extent used, and source file path
+# Fixes in this version:
+# • Prevent white/blank sea when values are 0.0 by:
+#    – forcing Hs filled levels to start at ≤ 0.0 in zoom mode
+#    – setting an explicit "under" color for contourf (same as the first color)
+# • Keeps: MED regional dataset, auto-fit extent, robust zoom scaling, debug lines
 # ----------------------------------------------------------------------------------
 
 import math
@@ -120,7 +119,6 @@ def percentile_from_cdf(cdf, centers, q):
     return h_lo + w*(h_hi - h_lo)
 
 def finite_stats(a: np.ndarray):
-    """Return (count_finite, vmin, vmax) ignoring NaNs; count=0 if none."""
     if a is None:
         return 0, None, None
     finite = np.isfinite(a)
@@ -129,7 +127,6 @@ def finite_stats(a: np.ndarray):
         return 0, None, None
     return cnt, float(np.nanmin(a)), float(np.nanmax(a))
 
-# Tolerant region slice: returns original arr2d if selection empty or NaN-only
 def region_slice(arr2d, lons, lats, extent):
     lon_min, lon_max, lat_min, lat_max = extent
     j = (lons >= lon_min) & (lons <= lon_max)
@@ -150,34 +147,20 @@ def clamp_extent(ext, lon_lo=-180.0, lon_hi=180.0, lat_lo=-90.0, lat_hi=90.0):
     ]
 
 def auto_fit_extent(lon_c, lat_c, arr2d, base_extent=None, pad_deg=1.0):
-    """
-    Compute tight [lon_min, lon_max, lat_min, lat_max] around finite values.
-    If base_extent is provided, compute within it; if no finite values there,
-    compute globally. If still no finite values, return base_extent (or None).
-    """
-    # Work array: optionally constrain by base extent first
     work = None
     if base_extent is not None:
         work = region_slice(arr2d, lon_c, lat_c, base_extent)
         cnt, _, _ = finite_stats(work)
         if cnt == 0:
-            work = None  # fall back to global
-
+            work = None
     if work is None:
         work = arr2d
         cnt, _, _ = finite_stats(work)
         if cnt == 0:
-            return base_extent  # nothing finite anywhere → keep preset (may be None)
-
-    # Identify finite index ranges
+            return base_extent
     finite_mask = np.isfinite(work)
     if not np.any(finite_mask):
         return base_extent
-
-    # Map back to lon/lat indices
-    # The subset might be the whole array (same shape) or a cutout.
-    # Easiest is to search indices directly on the coordinate vectors
-    # by masking with extent if given.
     if base_extent is not None:
         lon_min_b, lon_max_b, lat_min_b, lat_max_b = base_extent
         jmask = (lon_c >= lon_min_b) & (lon_c <= lon_max_b)
@@ -185,23 +168,17 @@ def auto_fit_extent(lon_c, lat_c, arr2d, base_extent=None, pad_deg=1.0):
     else:
         jmask = np.ones_like(lon_c, dtype=bool)
         imask = np.ones_like(lat_c, dtype=bool)
-
-    # Find any finite along axes within those masks
-    # Reduce over axis to see which lat rows / lon cols have any finite values
     arr_masked = arr2d[np.ix_(imask, jmask)]
     rows = np.any(np.isfinite(arr_masked), axis=1)
     cols = np.any(np.isfinite(arr_masked), axis=0)
     if not np.any(rows) or not np.any(cols):
         return base_extent
-
     i_idx = np.where(rows)[0]
     j_idx = np.where(cols)[0]
     lat_min = float(lat_c[imask][i_idx[0]])
     lat_max = float(lat_c[imask][i_idx[-1]])
     lon_min = float(lon_c[jmask][j_idx[0]])
     lon_max = float(lon_c[jmask][j_idx[-1]])
-
-    # Pad and clamp
     ext = [lon_min - pad_deg, lon_max + pad_deg, lat_min - pad_deg, lat_max + pad_deg]
     return clamp_extent(ext)
 
@@ -274,7 +251,7 @@ ZOOM_EXTENTS = {
 }
 base_cmap = "turbo"
 levels_generic = 50
-clip_pct_robust = 99.6  # robust cap for shading
+clip_pct_robust = 99.6
 
 # -----------------------------
 # Points of Interest (North Sea only)
@@ -307,13 +284,11 @@ except FileNotFoundError:
     st.error(f"Data file not found: {DATA_PATH}\n→ Place the file at this path or update REGIONAL_DATA_PATHS.")
     st.stop()
 
-# Validate required variables
 for k in ["prob","hs_edges","tp_edges","lat3_edges","lon3_edges"]:
     if k not in ds:
         st.error(f"Dataset missing required variable: {k}")
         st.stop()
 
-# Edges and centers
 hs_edges = ds["hs_edges"].values
 tp_edges = ds["tp_edges"].values
 lat_edges = ds["lat3_edges"].values
@@ -338,10 +313,10 @@ else:
     title_suffix = " — Annual"
 
 _tot_before = prob.sum(dim=("hs_bin","tp_bin"))
-prob = normalize_pdf(prob)  # dims: hs_bin, tp_bin, lat3_bin, lon3_bin
+prob = normalize_pdf(prob)
 
 # -----------------------------
-# Per‑Tp Hs limit: CSV import + Graph (table shown under map)
+# Per‑Tp Hs limit: CSV import + Graph
 # -----------------------------
 def init_per_tp_limits(default_val: float, tp_centers: np.ndarray):
     key = "hs_per_tp_limits"
@@ -353,7 +328,8 @@ if threshold_mode == "Hs limit per Tp (CSV + graph)":
     limits_key = init_per_tp_limits(Hcrit, tp_c)
     st.subheader("Hs limit per Tp — curve")
 
-    up = st.file_uploader("Import CSV (columns: 'Tp (s)', 'Hs_limit (m)')", type=["csv"], key="hs_csv_upload")
+    up = st.file_uploader("Import CSV (columns: 'Tp (s)', 'Hs_limit (m)')",
+                          type=["csv"], key="hs_csv_upload")
     if up is not None:
         try:
             df_in = pd.read_csv(up)
@@ -473,17 +449,15 @@ def get_zoom_projection(name: str):
     if name.startswith("PlateCarree"):
         return ccrs.PlateCarree()
     if name == "Mercator":
-        # Wide lat bounds to accommodate both NS and MED
         return ccrs.Mercator(central_longitude=10, min_latitude=10, max_latitude=82)
     if name == "Lambert Conformal":
-        # Center over Europe
         return ccrs.LambertConformal(
             central_longitude=10, central_latitude=50, standard_parallels=(30, 60)
         )
     return ccrs.PlateCarree()
 
 # -----------------------------
-# Color scaling & levels (robust against empty/NaN subsets)
+# Color scaling & levels (robust)
 # -----------------------------
 def safe_minmax(a):
     vmin = np.nanmin(a); vmax = np.nanmax(a)
@@ -510,11 +484,14 @@ def prep_levels(arr, label, prefer_ticks_from=None, zoom=False):
 
     if is_hs_quantity(label):
         if zoom:
-            filled = np.arange(math.floor(vmin/0.1)*0.1, math.ceil(vmax/0.1)*0.1 + 1e-9, 0.1)
-            contours = np.arange(math.floor(vmin/0.2)*0.2, math.ceil(vmax/0.2)*0.2 + 1e-9, 0.2)
+            # --- ensure the first level is <= 0.0 to color zeros ---
+            vmin0 = min(0.0, vmin)  # include 0.0 in the filled levels
+            filled = np.arange(math.floor(vmin0/0.1)*0.1, math.ceil(vmax/0.1)*0.1 + 1e-9, 0.1)
+            contours = np.arange(math.floor(vmin0/0.2)*0.2, math.ceil(vmax/0.2)*0.2 + 1e-9, 0.2)
             ticks = contours
             return filled, contours, ticks
         else:
+            # global view: keep 0.5 m ticks; zeros are rare globally but still okay
             ticks = hs_ticks(0.5, vmin, vmax)
             return hs_shading(base), ticks, ticks
 
@@ -524,19 +501,16 @@ def prep_levels(arr, label, prefer_ticks_from=None, zoom=False):
 is_percent_metric = ("P(Hs" in label) or ("Operability" in label)
 hi_global = 100.0 if is_percent_metric else np.nanpercentile(field2d, clip_pct_robust)
 
-# Determine the extent we will *use* for plotting and scaling
 preset_extent = ZOOM_EXTENTS.get(zoom_region, None) if zoom_enabled else None
 final_extent = None
 if zoom_enabled:
     if auto_fit:
         final_extent = auto_fit_extent(lonp, latp, field2d, base_extent=preset_extent, pad_deg=pad_deg)
-        # if auto-fit fails to find data, fall back to preset or None
         if final_extent is None and preset_extent is not None:
             final_extent = preset_extent
     else:
         final_extent = preset_extent
 
-# Choose array for ticks/scaling
 if zoom_enabled and not is_percent_metric:
     use_extent = final_extent if final_extent is not None else preset_extent
     region_array = region_slice(field2d, lonp, latp, use_extent) if use_extent is not None else field2d
@@ -544,7 +518,7 @@ if zoom_enabled and not is_percent_metric:
     if cnt_fin > 0:
         hi_zoom = np.nanpercentile(region_array, clip_pct_robust)
         if not np.isfinite(hi_zoom):
-            hi_zoom = np.nanmax(region_array)  # secondary fallback
+            hi_zoom = np.nanmax(region_array)
         hi_use = hi_zoom
         ticks_base = np.clip(region_array, None, hi_zoom)
     else:
@@ -588,12 +562,19 @@ def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
     fig = plt.figure(figsize=(15, 6), dpi=(200 if use_zoom else 150))
     ax = plt.axes(projection=ax_proj)
 
+    # --- build a cmap object and set a visible "under" color (for values < first level) ---
+    cmap_obj = plt.get_cmap(cmap).copy() if isinstance(cmap, str) else cmap
+    try:
+        cmap_obj.set_under(cmap_obj(0.0))  # color for < first level (was transparent/white)
+    except Exception:
+        pass
+
     # filled colors
     cf = ax.contourf(
         lon_c, lat_c, arr2d,
         levels=filled,
-        cmap=cmap,
-        extend="both",
+        cmap=cmap_obj,
+        extend="both",                 # so "under" & "over" colors are used
         transform=ccrs.PlateCarree(),
         zorder=1
     )
@@ -620,7 +601,6 @@ def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
     except Exception:
         pass
 
-    # features
     feature_scale = "10m" if use_zoom else "110m"
     ax.add_feature(cfeature.LAND.with_scale(feature_scale),
                    facecolor="lightgray", edgecolor="none", zorder=10)
@@ -629,28 +609,21 @@ def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
     ax.add_feature(cfeature.BORDERS.with_scale(feature_scale),
                    linewidth=0.3 if use_zoom else 0.2, zorder=12)
 
-    # extent
     if use_zoom and extent is not None:
         ax.set_extent(extent, crs=ccrs.PlateCarree())
-    elif use_zoom and extent is None and (region_name in ZOOM_EXTENTS):
+    elif use_zoom and (region_name in ZOOM_EXTENTS):
         ax.set_extent(ZOOM_EXTENTS[region_name], crs=ccrs.PlateCarree())
     else:
         ax.set_global()
 
-    # POIs only on North Sea
     if use_zoom and region_name == "North Sea":
         draw_pois(ax, POIS)
 
-    # grid points
     if show_grid_points:
         Lon2D, Lat2D = np.meshgrid(lon_c, lat_c)
-        ax.scatter(
-            Lon2D.ravel(), Lat2D.ravel(),
-            s=6, color="gray", alpha=0.6,
-            transform=ccrs.PlateCarree(), zorder=3
-        )
+        ax.scatter(Lon2D.ravel(), Lat2D.ravel(), s=6, color="gray", alpha=0.6,
+                   transform=ccrs.PlateCarree(), zorder=3)
 
-    # colorbar
     cb = plt.colorbar(cf, ax=ax, shrink=0.75, aspect=30, pad=0.01, ticks=ticks)
     cb.set_label(title)
     cb.ax.tick_params(labelsize=8)
@@ -680,7 +653,7 @@ plot_map(
 )
 
 # -----------------------------
-# Table under the map (reference only)
+# Table (reference only)
 # -----------------------------
 if threshold_mode == "Hs limit per Tp (CSV + graph)":
     with st.expander("Show Hs limit per Tp (table)", expanded=False):
@@ -697,7 +670,7 @@ if threshold_mode == "Hs limit per Tp (CSV + graph)":
 if show_debug:
     src = os.path.basename(DATA_PATH)
     if zoom_enabled:
-        use_ext = final_extent if final_extent is not None else preset_extent
+        use_ext = final_extent if final_extent is not None else ZOOM_EXTENTS.get(zoom_region, None)
         region_dbg = region_slice(field2d, lonp, latp, use_ext) if use_ext is not None else field2d
         cnt, vmin_dbg, vmax_dbg = finite_stats(region_dbg)
         st.write(
