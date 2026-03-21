@@ -1,11 +1,14 @@
-# 01_Metocean.py — Metocean Explorer (3° global + 0.5° regionals + auto-fit extent)
-# ----------------------------------------------------------------------------------
-# What's new here:
-# • Filled renderer toggle: "Contourf (smooth)" or "Pcolormesh (robust)".
-#   Use Pcolormesh if the sea appears white even though debug shows finite values.
-# • Keeps: MED regional dataset, auto-fit extent, robust zoom scaling, debug lines,
-#   Hs level floor at 0.0, and visible "under" color for values below first level.
-# ----------------------------------------------------------------------------------
+# 01_Metocean.py — Metocean Explorer (regional zooms + robust renderers + deep debug)
+# -----------------------------------------------------------------------------------
+# What's included
+# • Region presets: North Sea, Mediterranean
+# • MED 0.5° dataset support
+# • Auto-fit extent to data (with padding)
+# • Robust color scaling (no-NaN fallbacks)
+# • THREE renderers: Contourf / Pcolormesh / Imshow (force raster)
+# • Grid points overlay at high zorder (never hidden)
+# • Deep debug readouts to diagnose lon/lat/extent/renderer issues
+# -----------------------------------------------------------------------------------
 
 import math
 import os
@@ -49,25 +52,25 @@ def bin_centers(edges):
 
 def unwrap_lon_centers_from_edges(lon_edges):
     lon_c = bin_centers(lon_edges)
+    # wrap to [-180, 180] if needed
     if np.nanmax(lon_edges) > 180:
         lon_c = ((lon_c + 180) % 360) - 180
     return lon_c
 
 def to_sorted_lon_lat(field2d, lat_c, lon_edges):
-    # ensure ascending latitude and sorted longitudes in [-180,180]
+    # Lat ascending
     if lat_c[0] > lat_c[-1]:
         field2d = field2d[::-1, :]
         lat_c = lat_c[::-1]
+    # Lon sorted (and possibly wrapped)
     lon_unsorted = unwrap_lon_centers_from_edges(lon_edges)
     lon_sort_idx = np.argsort(lon_unsorted)
     lon_sorted = lon_unsorted[lon_sort_idx]
     field2d_sorted = field2d[:, lon_sort_idx]
-    return field2d_sorted, lat_c, lon_sorted, lon_sort_idx
+    return field2d_sorted, lat_c, lon_sorted
 
 def is_hs_quantity(label: str) -> bool:
-    if "%" in label:
-        return False
-    return "hs" in label.lower()
+    return ("%" not in label) and ("hs" in label.lower())
 
 def hs_ticks(step=0.5, vmin=0, vmax=10):
     lo = math.floor(vmin / step) * step
@@ -181,7 +184,7 @@ def auto_fit_extent(lon_c, lat_c, arr2d, base_extent=None, pad_deg=1.0):
     return clamp_extent(ext)
 
 # -----------------------------
-# Sidebar controls
+# Sidebar
 # -----------------------------
 with st.sidebar:
     st.subheader("Data")
@@ -190,7 +193,6 @@ with st.sidebar:
         "Regionals (0.5°): NS = metocean_scatter_050deg_NS_monthclim.nc, "
         "MED = metocean_scatter_050deg_MED_monthclim.nc"
     )
-
     st.subheader("Aggregation")
     agg = st.radio("Use:", ["By month","Annual"], horizontal=True)
     months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -221,27 +223,21 @@ with st.sidebar:
 
     st.subheader("View")
     zoom_enabled = st.checkbox("Enable zoom", value=False)
-    zoom_region = st.selectbox(
-        "Zoom region",
-        ["North Sea", "Mediterranean"],
-        index=0,
-        help="Pick a preset extent. Requires 'Enable zoom'."
-    )
-    auto_fit = st.checkbox("Auto-fit extent to data", value=True, help="Compute a tight extent around finite data")
-    pad_deg = st.number_input("Padding (deg) for auto-fit", min_value=0.0, max_value=10.0, value=1.0, step=0.5)
+    zoom_region = st.selectbox("Zoom region", ["North Sea", "Mediterranean"], index=0)
+    auto_fit = st.checkbox("Auto-fit extent to data", value=True)
+    pad_deg = st.number_input("Padding (deg) for auto-fit", 0.0, 10.0, 1.0, step=0.5)
     show_grid_points = st.checkbox("Show metocean grid points (both views)", value=True)
     zoom_proj_name = st.selectbox(
         "Zoom projection",
         ["PlateCarree (default)", "Mercator", "Lambert Conformal"],
-        index=0,
-        help="Applies only when zoom is enabled. Global view is always PlateCarree."
+        index=0
     )
-    # NEW: renderer toggle
+    # Renderer selector
     filled_renderer = st.radio(
         "Filled renderer",
-        ["Contourf (smooth)", "Pcolormesh (robust)"],
+        ["Contourf (smooth)", "Pcolormesh (robust)", "Imshow (force raster)"],
         horizontal=True,
-        index=1  # default to robust
+        index=2  # default to force-raster for robustness
     )
 
     st.subheader("Debug")
@@ -275,7 +271,7 @@ POIS = [
 ]
 
 # -----------------------------
-# Dataset choice
+# Dataset selection
 # -----------------------------
 def pick_dataset_path(use_zoom: bool, region_name: str) -> str:
     if use_zoom and (region_name in REGIONAL_DATA_PATHS) and os.path.exists(REGIONAL_DATA_PATHS[region_name]):
@@ -318,10 +314,10 @@ else:
     title_suffix = " — Annual"
 
 _tot_before = prob.sum(dim=("hs_bin","tp_bin"))
-prob = normalize_pdf(prob)
+prob = normalize_pdf(prob)  # hs_bin, tp_bin, lat3_bin, lon3_bin
 
 # -----------------------------
-# Per‑Tp Hs limit: CSV + graph
+# Per‑Tp Hs limit: CSV + Graph
 # -----------------------------
 def init_per_tp_limits(default_val: float, tp_centers: np.ndarray):
     key = "hs_per_tp_limits"
@@ -332,22 +328,18 @@ def init_per_tp_limits(default_val: float, tp_centers: np.ndarray):
 if threshold_mode == "Hs limit per Tp (CSV + graph)":
     limits_key = init_per_tp_limits(Hcrit, tp_c)
     st.subheader("Hs limit per Tp — curve")
-
-    up = st.file_uploader("Import CSV (columns: 'Tp (s)', 'Hs_limit (m)')",
-                          type=["csv"], key="hs_csv_upload")
+    up = st.file_uploader("Import CSV (columns: 'Tp (s)', 'Hs_limit (m)')", type=["csv"], key="hs_csv_upload")
     if up is not None:
         try:
             df_in = pd.read_csv(up)
         except UnicodeDecodeError:
             df_in = pd.read_csv(up, encoding="latin-1")
-
         def find_col(candidates, cols):
             low = [c.lower().strip() for c in cols]
             for cand in candidates:
                 if cand.lower().strip() in low:
                     return cols[low.index(cand.lower().strip())]
             return None
-
         tp_col = find_col(["tp (s)", "tp", "tp_s"], df_in.columns)
         hs_col = find_col(["hs_limit (m)", "hs limit (m)", "hs_limit", "hs (m)", "hs"], df_in.columns)
         if (tp_col is None) or (hs_col is None):
@@ -357,34 +349,27 @@ if threshold_mode == "Hs limit per Tp (CSV + graph)":
             hs_in = pd.to_numeric(df_in[hs_col], errors="coerce").astype(float).values
             mask = np.isfinite(tp_in) & np.isfinite(hs_in)
             tp_in, hs_in = tp_in[mask], hs_in[mask]
-            if tp_in.size < 2:
-                st.error("CSV must provide at least two valid Tp rows.")
-            else:
+            if tp_in.size >= 2:
                 order = np.argsort(tp_in)
                 tp_in, hs_in = tp_in[order], hs_in[order]
                 hs_interp = np.interp(tp_c, tp_in, hs_in, left=hs_in[0], right=hs_in[-1])
                 hs_interp = np.clip(np.round(hs_interp, 1), 0.0, 15.0)
                 st.session_state[limits_key] = hs_interp.tolist()
                 st.success(f"Imported {tp_in.size} rows → mapped to {len(tp_c)} Tp bins.")
-
-    hs_limit_curve = np.array(st.session_state[limits_key], dtype=float)
-    hs_limit_curve = np.clip(np.round(hs_limit_curve, 1), 0.0, 15.0)
-    st.session_state[limits_key] = hs_limit_curve.tolist()
-
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=tp_c, y=hs_limit_curve, mode="lines+markers",
-        line=dict(color="#1f77b4", width=2), marker=dict(size=6, color="#1f77b4")
-    ))
-    fig.update_layout(
-        height=220, margin=dict(l=10, r=10, t=30, b=10),
-        xaxis_title="Tp (s)", yaxis_title="Hs limit (m)",
-        template="plotly_white",
-        xaxis=dict(tickmode="linear", dtick=1),
-        yaxis=dict(range=[0, max(3.0, float(np.nanmax(hs_limit_curve)) + 0.5)], dtick=0.5),
-        showlegend=False
-    )
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    hs_limit_curve = np.array(st.session_state[limits_key], dtype=float) if "hs_per_tp_limits" in st.session_state else None
+    if hs_limit_curve is not None:
+        hs_limit_curve = np.clip(np.round(hs_limit_curve, 1), 0.0, 15.0)
+        st.session_state[limits_key] = hs_limit_curve.tolist()
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=tp_c, y=hs_limit_curve, mode="lines+markers",
+                                 line=dict(color="#1f77b4", width=2), marker=dict(size=6, color="#1f77b4")))
+        fig.update_layout(height=220, margin=dict(l=10, r=10, t=30, b=10),
+                          xaxis_title="Tp (s)", yaxis_title="Hs limit (m)",
+                          template="plotly_white",
+                          xaxis=dict(tickmode="linear", dtick=1),
+                          yaxis=dict(range=[0, max(3.0, float(np.nanmax(hs_limit_curve)) + 0.5)], dtick=0.5),
+                          showlegend=False)
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 else:
     hs_limit_curve = None
 
@@ -393,10 +378,8 @@ else:
 # -----------------------------
 hs_w = xr.DataArray(hs_c, dims=["hs_bin"])
 tp_w = xr.DataArray(tp_c, dims=["tp_bin"])
-
 mean_hs = (prob*hs_w).sum(dim=("hs_bin","tp_bin"))
 mean_tp = (prob*tp_w).sum(dim=("hs_bin","tp_bin"))
-
 hs_pdf = prob.sum(dim="tp_bin")
 hs_cdf = hs_pdf.cumsum(dim="hs_bin")
 hs_p50 = percentile_from_cdf(hs_cdf, hs_c, 0.50)
@@ -431,36 +414,30 @@ elif stat == "Hs P90 (m)":
 elif stat == "Hs P95 (m)":
     field = hs_p95; label = "Hs P95 (m)" + title_suffix
 elif stat.startswith("P(Hs"):
-    field = p_exceed
-    label = (f"P(Hs > {Hcrit:.1f} m) (%)" if hs_limit_curve is None
+    field = p_exceed; label = (f"P(Hs > {Hcrit:.1f} m) (%)" if hs_limit_curve is None
              else "P(Hs > Hs_limit(Tp)) (%)") + title_suffix
 else:
-    field = p_oper
-    label = (f"Operability (% time Hs ≤ {Hcrit:.1f} m)" if hs_limit_curve is None
+    field = p_oper; label = (f"Operability (% time Hs ≤ {Hcrit:.1f} m)" if hs_limit_curve is None
              else "Operability (% time Hs ≤ Hs_limit(Tp))") + title_suffix
 
 # -----------------------------
-# Prepare 2D field (sorted lon/lat)
+# Prepare 2D field & coords (sorted)
 # -----------------------------
 field2d = field.transpose("lat3_bin","lon3_bin").values
-field2d, latp, lonp, lon_sort_idx = to_sorted_lon_lat(field2d, bin_centers(lat_edges), lon_edges)
+field2d, latp, lonp = to_sorted_lon_lat(field2d, lat_c_unsorted, lon_edges)
 
 # -----------------------------
-# Projection factory
+# Projections
 # -----------------------------
 def get_zoom_projection(name: str):
-    if name.startswith("PlateCarree"):
-        return ccrs.PlateCarree()
-    if name == "Mercator":
-        return ccrs.Mercator(central_longitude=10, min_latitude=10, max_latitude=82)
+    if name.startswith("PlateCarree"): return ccrs.PlateCarree()
+    if name == "Mercator": return ccrs.Mercator(central_longitude=10, min_latitude=10, max_latitude=82)
     if name == "Lambert Conformal":
-        return ccrs.LambertConformal(
-            central_longitude=10, central_latitude=50, standard_parallels=(30, 60)
-        )
+        return ccrs.LambertConformal(central_longitude=10, central_latitude=50, standard_parallels=(30, 60))
     return ccrs.PlateCarree()
 
 # -----------------------------
-# Color scaling & levels
+# Levels & scaling (robust)
 # -----------------------------
 def safe_minmax(a):
     vmin = np.nanmin(a); vmax = np.nanmax(a)
@@ -471,33 +448,23 @@ def safe_minmax(a):
 def prep_levels(arr, label, prefer_ticks_from=None, zoom=False):
     base = prefer_ticks_from if prefer_ticks_from is not None else arr
     vmin, vmax = safe_minmax(base)
-
     if "P(Hs" in label or "Operability" in label:
         return pct_shading(), pct_ticks(), pct_ticks()
-
     if label.startswith("Mean Tp"):
         if zoom:
             contours = np.arange(math.floor(vmin/0.5)*0.5, math.ceil(vmax/0.5)*0.5 + 1e-9, 0.5)
-            filled = tp_shading(base)
-            ticks = contours
-            return filled, contours, ticks
+            filled = tp_shading(base); ticks = contours; return filled, contours, ticks
         else:
-            ticks = tp_ticks(1.0, vmin, vmax)
-            return tp_shading(base), ticks, ticks
-
+            ticks = tp_ticks(1.0, vmin, vmax); return tp_shading(base), ticks, ticks
     if is_hs_quantity(label):
         if zoom:
-            vmin0 = min(0.0, vmin)  # ensure 0.0 is included
+            vmin0 = min(0.0, vmin)
             filled = np.arange(math.floor(vmin0/0.1)*0.1, math.ceil(vmax/0.1)*0.1 + 1e-9, 0.1)
             contours = np.arange(math.floor(vmin0/0.2)*0.2, math.ceil(vmax/0.2)*0.2 + 1e-9, 0.2)
-            ticks = contours
-            return filled, contours, ticks
+            ticks = contours; return filled, contours, ticks
         else:
-            ticks = hs_ticks(0.5, vmin, vmax)
-            return hs_shading(base), ticks, ticks
-
-    lev = auto_levels(base, levels_generic)
-    return lev, lev, None
+            ticks = hs_ticks(0.5, vmin, vmax); return hs_shading(base), ticks, ticks
+    lev = auto_levels(base, levels_generic); return lev, lev, None
 
 is_percent_metric = ("P(Hs" in label) or ("Operability" in label)
 hi_global = 100.0 if is_percent_metric else np.nanpercentile(field2d, clip_pct_robust)
@@ -518,102 +485,67 @@ if zoom_enabled and not is_percent_metric:
     cnt_fin, _, _ = finite_stats(region_array)
     if cnt_fin > 0:
         hi_zoom = np.nanpercentile(region_array, clip_pct_robust)
-        if not np.isfinite(hi_zoom):
-            hi_zoom = np.nanmax(region_array)
-        hi_use = hi_zoom
-        ticks_base = np.clip(region_array, None, hi_zoom)
+        if not np.isfinite(hi_zoom): hi_zoom = np.nanmax(region_array)
+        hi_use = hi_zoom; ticks_base = np.clip(region_array, None, hi_zoom)
     else:
-        hi_use = hi_global
-        ticks_base = np.clip(field2d, None, hi_global)
+        hi_use = hi_global; ticks_base = np.clip(field2d, None, hi_global)
 else:
-    hi_use = hi_global
-    ticks_base = np.clip(field2d, None, hi_global)
+    hi_use = hi_global; ticks_base = np.clip(field2d, None, hi_global)
 
 arr_plot = np.clip(field2d, None, hi_use)
-filled_levels, contour_levels, cbar_ticks = prep_levels(
-    arr_plot, label, prefer_ticks_from=ticks_base, zoom=zoom_enabled
-)
+filled_levels, contour_levels, cbar_ticks = prep_levels(arr_plot, label, prefer_ticks_from=ticks_base, zoom=zoom_enabled)
 cmap_use = base_cmap + "_r" if "Operability" in label else base_cmap
 
 # -----------------------------
-# POI drawer
-# -----------------------------
-def draw_pois(ax, pois):
-    lons = [p["lon"] for p in pois]
-    lats = [p["lat"] for p in pois]
-    ax.scatter(lons, lats, s=28, c="black", marker="o",
-               transform=ccrs.PlateCarree(), zorder=20)
-    offsets = {
-        1:(0.12,0.10), 2:(0.12,0.10), 3:(0.14,0.10), 4:(0.14,0.12), 5:(0.14,0.12),
-        6:(0.12,0.12), 7:(0.12,0.12), 8:(0.12,0.12), 9:(0.12,0.12), 10:(0.14,0.12)
-    }
-    halo = [patheffects.withStroke(linewidth=2.2, foreground="white", alpha=0.9)]
-    for p in pois:
-        dx, dy = offsets.get(p["nr"], (0.12, 0.12))
-        ax.text(p["lon"] + dx, p["lat"] + dy, f'{p["nr"]} {p["name"]}',
-                transform=ccrs.PlateCarree(), fontsize=7, color="black",
-                zorder=21, path_effects=halo)
-
-# -----------------------------
-# Plot function
+# Plot
 # -----------------------------
 def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
-             use_zoom: bool, zoom_proj, region_name: str, extent=None, renderer="Pcolormesh (robust)"):
+             use_zoom: bool, zoom_proj, region_name: str, extent=None, renderer="Imshow (force raster)"):
     ax_proj = zoom_proj if use_zoom else ccrs.PlateCarree()
     fig = plt.figure(figsize=(15, 6), dpi=(200 if use_zoom else 150))
     ax = plt.axes(projection=ax_proj)
 
-    # Build colormap with a visible "under" color
+    # Prepare colormap with visible "under"
     cmap_obj = plt.get_cmap(cmap).copy() if isinstance(cmap, str) else cmap
-    try:
-        cmap_obj.set_under(cmap_obj(0.0))
-    except Exception:
-        pass
+    try: cmap_obj.set_under(cmap_obj(0.0))
+    except Exception: pass
 
-    # Mask invalid values explicitly
     A = np.ma.masked_invalid(arr2d)
 
-    # Choose renderer
-    if renderer.startswith("Pcolor"):
-        # Use a BoundaryNorm so the colorbar matches 'filled' levels
+    mappable = None
+    if renderer.startswith("Imshow"):
+        # Force raster in one go with explicit extent
+        extent_img = [float(lon_c.min()), float(lon_c.max()), float(lat_c.min()), float(lat_c.max())]
+        im = ax.imshow(
+            A, origin="lower",
+            extent=extent_img,  # [x0, x1, y0, y1]
+            cmap=cmap_obj,
+            vmin=filled[0] if len(filled) else None,
+            vmax=filled[-1] if len(filled) else None,
+            transform=ccrs.PlateCarree(),
+            zorder=1,
+            interpolation="nearest"
+        )
+        mappable = im
+    elif renderer.startswith("Pcolor"):
         norm = mcolors.BoundaryNorm(filled, ncolors=cmap_obj.N, clip=False)
         Lon2D, Lat2D = np.meshgrid(lon_c, lat_c)
-        pm = ax.pcolormesh(
-            Lon2D, Lat2D, A,
-            cmap=cmap_obj, norm=norm,
-            transform=ccrs.PlateCarree(),
-            zorder=1, shading="auto"
-        )
+        pm = ax.pcolormesh(Lon2D, Lat2D, A, cmap=cmap_obj, norm=norm,
+                           transform=ccrs.PlateCarree(), zorder=1, shading="auto")
         mappable = pm
     else:
-        cf = ax.contourf(
-            lon_c, lat_c, A,
-            levels=filled,
-            cmap=cmap_obj,
-            extend="both",
-            transform=ccrs.PlateCarree(),
-            zorder=1
-        )
+        cf = ax.contourf(lon_c, lat_c, A, levels=filled, cmap=cmap_obj,
+                         extend="both", transform=ccrs.PlateCarree(), zorder=1)
         mappable = cf
-
-    # Contour lines (optional; skip if renderer is pcolormesh and you prefer speed)
-    try:
-        cs = ax.contour(
-            lon_c, lat_c, A,
-            levels=contours,
-            colors="black",
-            linewidths=0.45 if use_zoom else 0.4,
-            transform=ccrs.PlateCarree(),
-            zorder=2
-        )
-        ax.figure.canvas.draw()
-        ax.clabel(
-            cs, fontsize=6, inline=True,
-            inline_spacing=(1 if use_zoom else 6),
-            fmt="%g", manual=False, rightside_up=True
-        )
-    except Exception:
-        pass
+        # Optional contours
+        try:
+            cs = ax.contour(lon_c, lat_c, A, levels=contours, colors="black",
+                            linewidths=0.45 if use_zoom else 0.4, transform=ccrs.PlateCarree(), zorder=2)
+            ax.figure.canvas.draw()
+            ax.clabel(cs, fontsize=6, inline=True, inline_spacing=(1 if use_zoom else 6),
+                      fmt="%g", manual=False, rightside_up=True)
+        except Exception:
+            pass
 
     # Features
     feature_scale = "10m" if use_zoom else "110m"
@@ -632,28 +564,32 @@ def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
     else:
         ax.set_global()
 
-    # POIs only on North Sea
-    if use_zoom and region_name == "North Sea":
-        draw_pois(ax, POIS)
-
-    # Grid points
+    # Grid points — never hidden
     if show_grid_points:
         Lon2D, Lat2D = np.meshgrid(lon_c, lat_c)
-        ax.scatter(Lon2D.ravel(), Lat2D.ravel(), s=6, color="gray", alpha=0.6,
-                   transform=ccrs.PlateCarree(), zorder=3)
+        ax.plot(Lon2D.ravel(), Lat2D.ravel(), linestyle="None",
+                marker="o", markersize=2.2, markeredgewidth=0.0,
+                color="#ff00aa", alpha=0.95, transform=ccrs.PlateCarree(), zorder=99)
+
+    # POIs only on North Sea
+    if use_zoom and region_name == "North Sea":
+        lons = [p["lon"] for p in POIS]; lats = [p["lat"] for p in POIS]
+        ax.scatter(lons, lats, s=28, c="black", marker="o", transform=ccrs.PlateCarree(), zorder=98)
+        halo = [patheffects.withStroke(linewidth=2.2, foreground="white", alpha=0.9)]
+        offsets = {1:(0.12,0.10), 2:(0.12,0.10), 3:(0.14,0.10), 4:(0.14,0.12), 5:(0.14,0.12),
+                   6:(0.12,0.12), 7:(0.12,0.12), 8:(0.12,0.12), 9:(0.12,0.12), 10:(0.14,0.12)}
+        for p in POIS:
+            dx, dy = offsets.get(p["nr"], (0.12, 0.12))
+            ax.text(p["lon"] + dx, p["lat"] + dy, f'{p["nr"]} {p["name"]}',
+                    transform=ccrs.PlateCarree(), fontsize=7, color="black", zorder=99, path_effects=halo)
 
     # Colorbar
     cb = plt.colorbar(mappable, ax=ax, shrink=0.75, aspect=30, pad=0.01, ticks=ticks)
-    cb.set_label(title)
-    cb.ax.tick_params(labelsize=8)
+    cb.set_label(title); cb.ax.tick_params(labelsize=8)
     ax.set_title(title)
 
     plt.subplots_adjust(left=0.02, right=0.97, top=0.93, bottom=0.06)
     st.pyplot(fig, use_container_width=True)
-
-    if use_zoom and region_name == "North Sea":
-        legend_items = ", ".join([f'{p["nr"]}: {p["name"]}' for p in POIS])
-        st.caption(f"**Points of interest (Nr → Name):** {legend_items}")
 
 # -----------------------------
 # Render
@@ -678,7 +614,7 @@ plot_map(
 if threshold_mode == "Hs limit per Tp (CSV + graph)":
     with st.expander("Show Hs limit per Tp (table)", expanded=False):
         df_view = pd.DataFrame({
-            "Tp (s)": bin_centers(tp_edges),
+            "Tp (s)": tp_c,
             "Hs_limit (m)": st.session_state["hs_per_tp_limits"]
         })
     st.dataframe(df_view.style.format({"Tp (s)": "{:.1f}", "Hs_limit (m)": "{:.1f}"}),
@@ -687,20 +623,25 @@ if threshold_mode == "Hs limit per Tp (CSV + graph)":
 # -----------------------------
 # Debug
 # -----------------------------
+def inside_extent_counts(lon_c, lat_c, extent):
+    if extent is None:
+        return lon_c.size, lat_c.size
+    lon_min, lon_max, lat_min, lat_max = extent
+    j = (lon_c >= lon_min) & (lon_c <= lon_max)
+    i = (lat_c >= lat_min) & (lat_c <= lat_max)
+    return int(np.count_nonzero(j)), int(np.count_nonzero(i))
+
 if show_debug:
     src = os.path.basename(DATA_PATH)
-    if zoom_enabled:
-        use_ext = final_extent if final_extent is not None else ZOOM_EXTENTS.get(zoom_region, None)
-        region_dbg = region_slice(field2d, lonp, latp, use_ext) if use_ext is not None else field2d
-        cnt, vmin_dbg, vmax_dbg = finite_stats(region_dbg)
-        st.write(
-            f"[DEBUG] Source: {src}  |  Zoom: {zoom_region}  |  Auto-fit: {bool(auto_fit)}  |  "
-            f"Extent used: {use_ext}  |  Finite pts: {cnt}  |  "
-            f"min={vmin_dbg}, max={vmax_dbg}  |  hi_use={float(hi_use)}  |  Renderer: {filled_renderer}"
-        )
-    else:
-        cnt, vmin_dbg, vmax_dbg = finite_stats(field2d)
-        st.write(
-            f"[DEBUG] Source: {src}  |  Global view  |  "
-            f"Finite pts: {cnt}  |  min={vmin_dbg}, max={vmax_dbg}  |  hi_use={float(hi_use)}  |  Renderer: {filled_renderer}"
-        )
+    use_ext = final_extent if (zoom_enabled and final_extent is not None) else (ZOOM_EXTENTS.get(zoom_region, None) if zoom_enabled else None)
+    cnt_all, vmin_dbg, vmax_dbg = finite_stats(field2d)
+    j_cnt, i_cnt = inside_extent_counts(lonp, latp, use_ext)
+    st.write(
+        f"[DEBUG] Source: {src}  |  Zoom: {zoom_region if zoom_enabled else 'Global'}  |  "
+        f"Renderer: {filled_renderer}  |  Auto-fit: {bool(auto_fit)}  |  "
+        f"Extent used: {use_ext}  |  arr2d shape: {field2d.shape}  |  "
+        f"lon range [{float(lonp.min()):.2f}, {float(lonp.max()):.2f}] (monotonic: {np.all(np.diff(lonp)>=0)})  |  "
+        f"lat range [{float(latp.min()):.2f}, {float(latp.max()):.2f}] (monotonic: {np.all(np.diff(latp)>=0)})  |  "
+        f"finite(all): {cnt_all} (min={vmin_dbg}, max={vmax_dbg})  |  "
+        f"grid cols inside extent: {j_cnt}  |  grid rows inside extent: {i_cnt}"
+    )
