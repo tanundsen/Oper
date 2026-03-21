@@ -186,7 +186,7 @@ with st.sidebar:
 REGION_EXTENTS = {
     "North Sea": [-13, 35, 52, 76],
     # Mediterranean (covers W Med to Levant; tweak as needed)
-    "Mediterranean": [-10, 40, 30, 46],
+    "Mediterranean": [-10, 40, 30, 80],
 }
 
 base_cmap = "turbo"
