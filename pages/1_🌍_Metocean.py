@@ -4,9 +4,9 @@
 # • Each zoom loads its own 0.5° dataset; global uses 3° dataset.
 # • Strict loader validates lon/lat bounds to prevent wrong cached dataset reuse.
 # • Safe color scaling fallbacks if the zoom subset is empty or all-NaN.
-# • North Sea POIs included (toggle remains automatic: shown only on NS).
+# • North Sea POIs included (shown only on North Sea).
 # • Per‑Tp Hs limit via CSV + preview chart; table under the map.
-# • Coastline cleanup (nearest-ocean extrapolation) + land/lake masking via Cartopy+Shapely.
+# • Coastline cleanup (nearest-ocean extrapolation) + land masking tuned for coarse grids.
 # --------------------------------------------------------------------------------
 import math
 import os
@@ -20,11 +20,11 @@ import cartopy.feature as cfeature
 import plotly.graph_objects as go
 from matplotlib import patheffects
 
-# --- NEW: imports for coastline cleanup / masking ---
+# ---- NEW: imports for land mask / extrapolation ----
 from cartopy.io import shapereader as shpreader
 from shapely.ops import unary_union
 try:
-    from shapely import vectorized as shp_vec  # shapely.vectorized.contains / covers
+    from shapely import vectorized as shp_vec  # shapely.vectorized.contains/covers
     SHAPELY_VEC = True
 except Exception:
     SHAPELY_VEC = False
@@ -130,46 +130,46 @@ def percentile_from_cdf(cdf, centers, q):
     w = (q - c_lo)/denom
     return h_lo + w*(h_hi - h_lo)
 
-# ---------- NEW: Natural Earth land+lake mask (cached) ----------
+# ---------- NEW: Natural Earth land mask (cached) ----------
 @st.cache_resource(show_spinner=False)
-def _landlike_geom(resolution: str):
+def _land_geom(resolution: str, include_lakes: bool):
     """
-    Build a unified polygon of LAND + LAKES from Natural Earth
-    at the requested resolution ('10m'|'50m'|'110m').
+    Build a unified polygon for LAND (and optionally LAKES) at '10m'|'50m'|'110m'.
+    Using 110m with lakes=False is recommended for coarse (≥0.5°) grids so extrapolated
+    values can fill narrow straits and around small islands.
     """
-    land_path = shpreader.natural_earth(resolution=resolution, category='physical', name='land')
-    lakes_path = shpreader.natural_earth(resolution=resolution, category='physical', name='lakes')
-
+    land_path  = shpreader.natural_earth(resolution=resolution, category='physical', name='land')
     land_geoms = list(shpreader.Reader(land_path).geometries())
-    lakes_geoms = list(shpreader.Reader(lakes_path).geometries())
+    geom = unary_union(land_geoms)
 
-    # Treat lakes as land-like so the color field does NOT show inside lakes
-    return unary_union([unary_union(land_geoms), unary_union(lakes_geoms)])
+    if include_lakes:
+        lakes_path  = shpreader.natural_earth(resolution=resolution, category='physical', name='lakes')
+        lakes_geoms = list(shpreader.Reader(lakes_path).geometries())
+        geom = unary_union([geom, unary_union(lakes_geoms)])
+    return geom
 
-def mask_land_to_nan(lon2d: np.ndarray, lat2d: np.ndarray, arr: np.ndarray, resolution: str) -> np.ndarray:
+def mask_land_to_nan(lon2d, lat2d, arr, resolution: str = '110m', include_lakes: bool = False):
     """
-    Return a copy of arr where points on LAND or inside LAKES are set to NaN.
-    Uses Shapely vectorized ops if available; otherwise returns arr unchanged (warns).
+    Set points on LAND (and optionally LAKES) to NaN using Shapely vectorized ops.
+    If Shapely vectorized is missing, returns the array unchanged with a warning.
     """
     if not SHAPELY_VEC:
-        st.warning("Shapely vectorized operations not available; skipping land mask.")
+        st.warning("Shapely vectorized ops unavailable; skipping land mask.")
         return arr
-
-    geom = _landlike_geom(resolution)
-    # Prefer 'covers' (includes boundary). Fall back to contains|touches if not present.
+    geom = _land_geom(resolution, include_lakes)
+    # Prefer 'covers' (includes boundary). Fallback to contains|touches.
     try:
-        on_land = shp_vec.covers(geom, lon2d, lat2d)   # shapely >=2.0
+        on_land = shp_vec.covers(geom, lon2d, lat2d)
     except Exception:
         on_land = shp_vec.contains(geom, lon2d, lat2d)
         try:
             on_land |= shp_vec.touches(geom, lon2d, lat2d)
         except Exception:
             pass
-
     out = arr.copy()
     out[on_land] = np.nan
     return out
-# ---------------------------------------------------------------
+# -------------------------------------------------------------
 
 # -----------------------------
 # Sidebar (controls)
@@ -237,14 +237,25 @@ with st.sidebar:
         min_value=0.0, max_value=1.0, value=0.010, step=0.005, format="%.3f",
         help="Cells ≤ ε are considered contaminated and are replaced by nearest ocean values."
     )
+
+    # NEW: land mask behavior
+    simplified_mask = st.checkbox(
+        "Use simplified land mask (110 m) — recommended for 0.5° grids", True,
+        help="Keeps only large land masses; lets extrapolated ocean fill narrow straits/small islands."
+    )
+    mask_lakes = st.checkbox(
+        "Mask lakes", False,
+        help="If OFF, inland seas/lakes will retain ocean-like values after extrapolation."
+    )
+
     if fix_coast and not SCIPY_OK:
-        st.warning("SciPy is not available; coastline fix will be skipped. Install 'scipy' to enable.")
+        st.warning("SciPy not available; coastline fix will be skipped. Install 'scipy' to enable.")
 
     st.subheader("Debug")
     show_debug = st.checkbox("Show debug", False)
 
 # -----------------------------
-# Region extents (deg) — Med padded to include outer centers
+# Region extents (deg)
 # -----------------------------
 REGION_EXTENTS = {
     "North Sea": [-13, 35, 52, 76],
@@ -252,7 +263,6 @@ REGION_EXTENTS = {
 }
 
 base_cmap = "turbo"
-levels_generic = 50
 clip_pct_robust = 99.6
 
 # -----------------------------
@@ -276,19 +286,13 @@ POIS_NS = [
 # -----------------------------
 @st.cache_resource(show_spinner=False)
 def load_metocean_cached(path: str, cache_key: str) -> xr.Dataset:
-    # cache_key ensures unique cache entry per path
-    _ = cache_key
+    _ = cache_key  # distinct cache entry per path
     return xr.open_dataset(path)
 
 def load_metocean_strict(path: str, expected_region: str) -> xr.Dataset:
-    """
-    Load via cache and validate lon/lat against the chosen region.
-    If not matching (e.g., NS served when MED expected), clear cache and reload uncached.
-    """
     ds = load_metocean_cached(path, cache_key=path)
 
-    # Map alternative naming for lon/lat edges if necessary
-    # Standard names used downstream: lon3_edges, lat3_edges
+    # Normalize coordinate names used downstream
     if ("lon3_edges" not in ds) and ("lon_edges" in ds):
         ds = ds.rename({"lon_edges": "lon3_edges"})
     if ("lat3_edges" not in ds) and ("lat_edges" in ds):
@@ -325,15 +329,12 @@ def load_metocean_strict(path: str, expected_region: str) -> xr.Dataset:
 use_zoom = zoom_region != "None"
 path = REGIONAL_DATA_PATHS[zoom_region] if use_zoom else GLOBAL_DATA_PATH
 
-# Validate file exists
 if not os.path.exists(path):
     st.error(f"File not found: {path}")
     st.stop()
 
-# Load dataset strictly
 ds = load_metocean_strict(path, expected_region=zoom_region if use_zoom else "None")
 
-# Sidebar caption reflecting the actual selected file
 st.sidebar.caption(
     "Global: **metocean_monthclim.nc (3°)** • "
     + (f"Zoom '{zoom_region}': **{os.path.basename(path)} (0.5°)**" if use_zoom else "No zoom dataset selected")
@@ -672,13 +673,12 @@ def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
     st.pyplot(fig, use_container_width=True)
 
 # -----------------------------
-# Render (with coastline cleanup + land/lake masking)
+# Render (coastline cleanup + tuned land mask)
 # -----------------------------
-# Build lon/lat grid
 Lon2D, Lat2D = np.meshgrid(lonp, latp)
 
-# Match mask resolution to the feature scale
-mask_res = '10m' if use_zoom else '110m'
+# Use 110m when simplified_mask=True (best for 0.5°); otherwise match the map feature scale
+mask_res_use = '110m' if simplified_mask else ('10m' if use_zoom else '110m')
 
 arr_to_plot = arr_plot.copy()
 filled_cells = 0
@@ -690,7 +690,6 @@ if fix_coast and SCIPY_OK:
 
     if np.any(valid) and np.any(invalid):
         if fill_method.startswith("Nearest (griddata)"):
-            # Fill invalid points from nearest valid ocean neighbour
             arr_filled = arr_to_plot.copy()
             arr_filled[invalid] = griddata(
                 (Lon2D[valid], Lat2D[valid]),
@@ -706,8 +705,10 @@ if fix_coast and SCIPY_OK:
         arr_to_plot = arr_filled
         filled_cells = int(invalid.sum())
 
-# Mask land + lakes so colors stop cleanly at shorelines and don't fill inland waters
-arr_plot_masked = mask_land_to_nan(Lon2D, Lat2D, arr_to_plot, resolution=mask_res)
+# Mask LAND (optionally LAKES). With 110m resolution, small islands/straits are not masked → filled by extrapolation.
+arr_plot_masked = mask_land_to_nan(
+    Lon2D, Lat2D, arr_to_plot, resolution=mask_res_use, include_lakes=bool(mask_lakes)
+)
 
 plot_map(
     lonp, latp, arr_plot_masked, label,
@@ -742,5 +743,7 @@ if show_debug:
         "\nThreshold mode:", threshold_mode,
         "\nCoastline fix:", bool(fix_coast),
         "\nMethod:", fill_method if SCIPY_OK else "SciPy missing",
-        "\nCells filled (≤ ε):", filled_cells
+        "\nCells filled (≤ ε):", filled_cells,
+        "\nMask resolution used:", mask_res_use,
+        "\nMask lakes:", bool(mask_lakes)
     )
