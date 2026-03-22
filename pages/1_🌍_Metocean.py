@@ -4,8 +4,9 @@
 # • Each zoom loads its own 0.5° dataset; global uses 3° dataset.
 # • Strict loader validates lon/lat bounds to prevent wrong cached dataset reuse.
 # • Safe color scaling fallbacks if the zoom subset is empty or all-NaN.
-# • North Sea POIs included (toggle remains automatic: shown only on NS).
+# • North Sea POIs included (toggle automatic: shown only on NS).
 # • Per‑Tp Hs limit via CSV + preview chart; table under the map.
+# • Fullscreen patch (Edge-safe): expand content width, remove gutters, preserve original figsize/dpi.
 # --------------------------------------------------------------------------------
 import math
 import os
@@ -35,6 +36,21 @@ REGIONAL_DATA_PATHS = {
 # -----------------------------
 st.set_page_config(layout="wide")
 st.header("🌍 Global wave statistics")
+
+# --- CSS: expand main content width (Edge-friendly), keep sidebar/header functional ---
+st.markdown("""
+<style>
+/* Use full viewport width for the central content; keep padding minimal */
+div.block-container, .main .block-container {
+    padding: 0rem !important;
+    margin: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+}
+/* Keep sidebar interactive; don't collapse it programmatically */
+[data-testid="stSidebar"] { border-right: none; }
+</style>
+""", unsafe_allow_html=True)
 
 # -----------------------------
 # Helpers
@@ -367,7 +383,8 @@ if threshold_mode == "Hs limit per Tp (CSV + graph)":
         yaxis=dict(range=[0, max(3.0, float(np.nanmax(hs_limit_curve)) + 0.5)], dtick=0.5),
         showlegend=False
     )
-    st.plotly_chart(fig, use_container_Width=True, config={"displayModeBar": False})
+    # Ensure full width in Streamlit
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 else:
     hs_limit_curve = None
 
@@ -489,6 +506,7 @@ def prep_levels(arr, label, prefer_ticks_from=None, zoom=False):
     lev = auto_levels(base, 50)
     return lev, lev, None
 
+# Close the boolean correctly
 is_percent_metric = ("P(Hs" in label) or ("Operability" in label)
 
 # Robust caps from full field
@@ -534,19 +552,24 @@ def draw_pois(ax, pois):
                 zorder=21, path_effects=halo)
 
 # -----------------------------
-# Plot function
+# Plot function (gutter-free, original resolution preserved)
 # -----------------------------
 def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
              use_zoom: bool, zoom_proj, region_name: str):
+
+    # Use the exact original resolution (no figsize/dpi changes)
     ax_proj = zoom_proj if use_zoom else ccrs.PlateCarree()
     fig = plt.figure(figsize=(15, 6), dpi=(200 if use_zoom else 150))
     ax = plt.axes(projection=ax_proj)
 
+    # Filled colors
     cf = ax.contourf(
         lon_c, lat_c, arr2d,
         levels=filled, cmap=cmap, extend="both",
         transform=ccrs.PlateCarree(), zorder=1
     )
+
+    # Contour lines + labels
     try:
         cs = ax.contour(
             lon_c, lat_c, arr2d, levels=contours, colors="black",
@@ -559,6 +582,7 @@ def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
     except Exception:
         pass
 
+    # Features
     feature_scale = "10m" if use_zoom else "110m"
     ax.add_feature(cfeature.LAND.with_scale(feature_scale),
                    facecolor="lightgray", edgecolor="none", zorder=10)
@@ -567,24 +591,37 @@ def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
     ax.add_feature(cfeature.BORDERS.with_scale(feature_scale),
                    linewidth=0.3 if use_zoom else 0.2, zorder=12)
 
+    # Extent
     if use_zoom:
         ax.set_extent(REGION_EXTENTS[region_name], crs=ccrs.PlateCarree())
     else:
         ax.set_global()
 
+    # POIs for NS only
     if use_zoom and region_name == "North Sea":
         draw_pois(ax, POIS_NS)
 
+    # Grid points overlay
     if show_grid_points:
         Lon2D, Lat2D = np.meshgrid(lon_c, lat_c)
         ax.scatter(Lon2D.ravel(), Lat2D.ravel(), s=6, color="gray", alpha=0.6,
                    transform=ccrs.PlateCarree(), zorder=3)
 
-    cb = plt.colorbar(cf, ax=ax, shrink=0.75, aspect=30, pad=0.01, ticks=ticks)
+    # ---- Tight colorbar in its own axis to avoid right gutter ----
+    # Place map and colorbar explicitly; keep original resolution.
+    # fig coords: [left, bottom, width, height]
+    ax.set_position([0.00, 0.00, 0.94, 1.00])         # map uses 94% width
+    cax = fig.add_axes([0.955, 0.10, 0.02, 0.80])     # colorbar: 2% width, tidy margins
+    cb = plt.colorbar(cf, cax=cax, ticks=ticks)
     cb.set_label(title)
     cb.ax.tick_params(labelsize=8)
-    ax.set_title(title)
-    plt.subplots_adjust(left=0.02, right=0.97, top=0.93, bottom=0.06)
+
+    # Title (small pad)
+    ax.set_title(title, pad=2)
+
+    # IMPORTANT: do not call plt.subplots_adjust(...) here; it would re-introduce gutters
+
+    # Full-width rendering in Streamlit (container already expanded via CSS)
     st.pyplot(fig, use_container_width=True)
 
 # -----------------------------
