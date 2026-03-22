@@ -1,11 +1,12 @@
 # 01_Metocean.py — Metocean Explorer (3° global + 0.5° regional zooms)
 # --------------------------------------------------------------------------------
-# • Zoom regions: None | North Sea | Mediterranean
+# • Zoom regions: None \ North Sea \ Mediterranean
 # • Each zoom loads its own 0.5° dataset; global uses 3° dataset.
 # • Strict loader validates lon/lat bounds to prevent wrong cached dataset reuse.
 # • Safe color scaling fallbacks if the zoom subset is empty or all-NaN.
 # • North Sea POIs included (toggle remains automatic: shown only on NS).
 # • Per‑Tp Hs limit via CSV + preview chart; table under the map.
+# • NEW: Coastline cleanup (nearest-ocean extrapolation) + land masking.
 # --------------------------------------------------------------------------------
 import math
 import os
@@ -18,6 +19,15 @@ import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 import plotly.graph_objects as go
 from matplotlib import patheffects
+
+# --- NEW imports for coastline cleanup ---
+from cartopy import util as cutil  # land/ocean mask
+try:
+    from scipy.interpolate import griddata
+    from scipy.ndimage import distance_transform_edt
+    SCIPY_OK = True
+except Exception:
+    SCIPY_OK = False
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -125,7 +135,6 @@ with st.sidebar:
         help="Select a regional zoom (0.5° grid) or None for the global 3° view."
     )
     show_grid_points = st.checkbox("Show metocean grid points (zoom/global)", value=True)
-
     zoom_proj_name = st.selectbox(
         "Zoom projection",
         ["PlateCarree (default)", "Mercator", "Lambert Conformal"],
@@ -142,7 +151,6 @@ with st.sidebar:
 
     st.subheader("Statistic")
     Hcrit = st.number_input("Hs threshold (m)", 0.1, 15.0, 2.5, step=0.1)
-
     threshold_mode = st.radio(
         "Threshold mode",
         ["Single Hcrit", "Hs limit per Tp (CSV + graph)"],
@@ -162,6 +170,28 @@ with st.sidebar:
         ]
     )
 
+    # -----------------------------
+    # NEW: Coastline cleanup controls
+    # -----------------------------
+    st.subheader("Coastline cleanup")
+    fix_coast = st.checkbox(
+        "Fix coast artifacts (near‑zero fill)", True,
+        help="Replace 0/near‑0 coastal cells with the nearest valid ocean value before plotting."
+    )
+    fill_method = st.radio(
+        "Extrapolation method",
+        ["Nearest (griddata)", "Nearest (distance transform)"],
+        index=1,
+        help="Both are nearest‑ocean fills. The distance transform is often the cleanest.",
+    )
+    zero_epsilon = st.number_input(
+        "Zero threshold ε (treated invalid if value ≤ ε)", 
+        min_value=0.0, max_value=1.0, value=0.010, step=0.005, format="%.3f",
+        help="Cells ≤ ε are considered contaminated and are replaced by nearest ocean values."
+    )
+    if fix_coast and not SCIPY_OK:
+        st.warning("SciPy is not available; coastline fix will be skipped. Install 'scipy' to enable.")
+
     st.subheader("Debug")
     show_debug = st.checkbox("Show debug", False)
 
@@ -172,6 +202,7 @@ REGION_EXTENTS = {
     "North Sea": [-13, 35, 52, 76],
     "Mediterranean": [-10.5, 40.5, 29.75, 46.25],
 }
+
 base_cmap = "turbo"
 levels_generic = 50
 clip_pct_robust = 99.6
@@ -223,11 +254,11 @@ def load_metocean_strict(path: str, expected_region: str) -> xr.Dataset:
 
     lon_c = unwrap_lon_centers_from_edges(lon_edges.values)
     lat_c = bin_centers(lat_edges.values)
+
     got = dict(lon_min=float(np.nanmin(lon_c)), lon_max=float(np.nanmax(lon_c)),
                lat_min=float(np.nanmin(lat_c)), lat_max=float(np.nanmax(lat_c)))
-
     expected = {
-        "North Sea": dict(lon_min=-13.5, lon_max= 35.5, lat_min=52.0,  lat_max=76.5),
+        "North Sea": dict(lon_min=-13.5, lon_max= 35.5, lat_min=52.0, lat_max=76.5),
         "Mediterranean": dict(lon_min=-10.5, lon_max= 40.5, lat_min=29.5, lat_max=46.5),
         "None": None,
     }
@@ -236,7 +267,6 @@ def load_metocean_strict(path: str, expected_region: str) -> xr.Dataset:
         E = expected[expected_region]
         ok = (E["lon_min"] <= got["lon_min"] <= got["lon_max"] <= E["lon_max"]) and \
              (E["lat_min"] <= got["lat_min"] <= got["lat_max"] <= E["lat_max"])
-
     if not ok:
         st.warning(f"Loaded dataset bounds {got} do not match expected '{expected_region}'. Clearing cache and reloading…")
         st.cache_resource.clear()
@@ -315,7 +345,6 @@ def init_per_tp_limits(default_val: float, tp_centers: np.ndarray):
 if threshold_mode == "Hs limit per Tp (CSV + graph)":
     limits_key = init_per_tp_limits(Hcrit, tp_c)
     st.subheader("Hs limit per Tp — curve")
-
     up = st.file_uploader("Import CSV (columns: 'Tp (s)', 'Hs_limit (m)')", type=["csv"], key="hs_csv_upload")
     if up is not None:
         try:
@@ -332,7 +361,6 @@ if threshold_mode == "Hs limit per Tp (CSV + graph)":
 
         tp_col = find_col(["tp (s)", "tp", "tp_s"], df_in.columns)
         hs_col = find_col(["hs_limit (m)", "hs limit (m)", "hs_limit", "hs (m)", "hs"], df_in.columns)
-
         if (tp_col is None) or (hs_col is None):
             st.error("CSV must contain columns 'Tp (s)' and 'Hs_limit (m)'.")
         else:
@@ -349,8 +377,7 @@ if threshold_mode == "Hs limit per Tp (CSV + graph)":
                 hs_interp = np.clip(np.round(hs_interp, 1), 0.0, 15.0)
                 st.session_state[limits_key] = hs_interp.tolist()
                 st.success(f"Imported {tp_in.size} rows → mapped to {len(tp_c)} Tp bins.")
-
-    hs_limit_curve = np.array(st.session_state[limits_key], dtype=float)
+    hs_limit_curve = np.array(st.session_state["hs_per_tp_limits"], dtype=float)
     hs_limit_curve = np.clip(np.round(hs_limit_curve, 1), 0.0, 15.0)
     st.session_state[limits_key] = hs_limit_curve.tolist()
 
@@ -367,7 +394,7 @@ if threshold_mode == "Hs limit per Tp (CSV + graph)":
         yaxis=dict(range=[0, max(3.0, float(np.nanmax(hs_limit_curve)) + 0.5)], dtick=0.5),
         showlegend=False
     )
-    st.plotly_chart(fig, use_container_Width=True, config={"displayModeBar": False})
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 else:
     hs_limit_curve = None
 
@@ -376,10 +403,13 @@ else:
 # -----------------------------
 hs_w = xr.DataArray(hs_c, dims=["hs_bin"])
 tp_w = xr.DataArray(tp_c, dims=["tp_bin"])
+
 mean_hs = (prob*hs_w).sum(dim=("hs_bin","tp_bin"))
 mean_tp = (prob*tp_w).sum(dim=("hs_bin","tp_bin"))
+
 hs_pdf = prob.sum(dim="tp_bin")
 hs_cdf = hs_pdf.cumsum(dim="hs_bin")
+
 hs_p50 = percentile_from_cdf(hs_cdf, hs_c, 0.50)
 hs_p90 = percentile_from_cdf(hs_cdf, hs_c, 0.90)
 hs_p95 = percentile_from_cdf(hs_cdf, hs_c, 0.95)
@@ -470,8 +500,10 @@ def prep_levels(arr, label, prefer_ticks_from=None, zoom=False):
     """
     base = prefer_ticks_from if prefer_ticks_from is not None else arr
     vmin, vmax = safe_minmax(base)
+
     if "P(Hs" in label or "Operability" in label:
         return pct_shading(), pct_ticks(), pct_ticks()
+
     if label.startswith("Mean Tp"):
         if zoom:
             contours = np.arange(math.floor(vmin/0.5)*0.5, math.ceil(vmax/0.5)*0.5 + 1e-9, 0.5)
@@ -479,6 +511,7 @@ def prep_levels(arr, label, prefer_ticks_from=None, zoom=False):
             return filled, contours, contours
         ticks = tp_ticks(1.0, vmin, vmax)
         return tp_shading(base), ticks, ticks
+
     if is_hs_quantity(label):
         if zoom:
             filled = np.arange(math.floor(vmin/0.1)*0.1, math.ceil(vmax/0.1)*0.1 + 1e-9, 0.1)
@@ -486,6 +519,7 @@ def prep_levels(arr, label, prefer_ticks_from=None, zoom=False):
             return filled, contours, contours
         ticks = hs_ticks(0.5, vmin, vmax)
         return hs_shading(base), ticks, ticks
+
     lev = auto_levels(base, 50)
     return lev, lev, None
 
@@ -509,6 +543,7 @@ else:
     ticks_base = np.clip(field2d, None, hi_global)
 
 arr_plot = np.clip(field2d, None, hi_use)
+
 filled_levels, contour_levels, cbar_ticks = prep_levels(
     arr_plot, label, prefer_ticks_from=ticks_base, zoom=use_zoom
 )
@@ -545,7 +580,7 @@ def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
     cf = ax.contourf(
         lon_c, lat_c, arr2d,
         levels=filled, cmap=cmap, extend="both",
-        transform=ccrs.PlateCarree(), zorder=1
+        transform=ccrs.PlateCarree(), zorder=1, antialiased=True
     )
     try:
         cs = ax.contour(
@@ -584,14 +619,53 @@ def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
     cb.set_label(title)
     cb.ax.tick_params(labelsize=8)
     ax.set_title(title)
+
     plt.subplots_adjust(left=0.02, right=0.97, top=0.93, bottom=0.06)
     st.pyplot(fig, use_container_width=True)
 
 # -----------------------------
-# Render
+# Render (with coastline cleanup + land masking)
 # -----------------------------
+# Build lon/lat grid
+Lon2D, Lat2D = np.meshgrid(lonp, latp)
+
+# Match mask resolution to the feature scale
+mask_res = '10m' if use_zoom else '110m'
+
+arr_to_plot = arr_plot.copy()
+filled_cells = 0
+
+if fix_coast and SCIPY_OK:
+    # Treat NaN or ≤ ε as invalid (coastal contamination)
+    invalid = ~np.isfinite(arr_to_plot) | (arr_to_plot <= float(zero_epsilon))
+    valid = ~invalid
+
+    if np.any(valid) and np.any(invalid):
+        if fill_method.startswith("Nearest (griddata)"):
+            # Fill invalid points from nearest valid ocean neighbour
+            arr_filled = arr_to_plot.copy()
+            arr_filled[invalid] = griddata(
+                (Lon2D[valid], Lat2D[valid]),
+                arr_to_plot[valid],
+                (Lon2D[invalid], Lat2D[invalid]),
+                method='nearest'
+            )
+        else:
+            # Distance-transform based nearest fill (cleanest edges)
+            dist, idx = distance_transform_edt(invalid, return_indices=True)
+            # Map every invalid cell to nearest valid index
+            arr_filled = arr_to_plot[idx[0], idx[1]]
+
+        arr_to_plot = arr_filled
+        filled_cells = int(invalid.sum())
+
+# Mask land so colors stop at the coastline
+arr_plot_masked = cutil.maskoceans(
+    Lon2D, Lat2D, arr_to_plot, inlands=True, resolution=mask_res
+)
+
 plot_map(
-    lonp, latp, arr_plot, label,
+    lonp, latp, arr_plot_masked, label,
     filled_levels, contour_levels, cmap_use, cbar_ticks,
     use_zoom=use_zoom,
     zoom_proj=get_zoom_projection(zoom_proj_name),
@@ -610,7 +684,7 @@ if threshold_mode == "Hs limit per Tp (CSV + graph)":
 # Debug extras
 # -----------------------------
 if show_debug:
-    finite_pct = 100.0 * np.isfinite(arr_plot).sum() / max(1, arr_plot.size)
+    finite_pct = 100.0 * np.isfinite(arr_plot_masked).sum() / max(1, arr_plot_masked.size)
     st.write(
         "Totals BEFORE normalization:",
         float(_tot_before.min()), float(_tot_before.max())
@@ -620,5 +694,8 @@ if show_debug:
         "\nZoomed:", bool(use_zoom),
         "\nZoom projection:", zoom_proj_name,
         "\nSource:", os.path.basename(path),
-        "\nThreshold mode:", threshold_mode
+        "\nThreshold mode:", threshold_mode,
+        "\nCoastline fix:", bool(fix_coast), 
+        "\nMethod:", fill_method if SCIPY_OK else "SciPy missing",
+        "\nCells filled (≤ ε):", filled_cells
     )
