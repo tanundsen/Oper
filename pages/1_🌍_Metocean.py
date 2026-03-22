@@ -6,7 +6,7 @@
 # • Safe color scaling fallbacks if the zoom subset is empty or all-NaN.
 # • North Sea POIs included (toggle remains automatic: shown only on NS).
 # • Per‑Tp Hs limit via CSV + preview chart; table under the map.
-# • Fullscreen patch: remove Streamlit padding & matplotlib margins, tighten colorbar.
+# • Fullscreen patch: force true full-width, remove gutters, tighten colorbar.
 # --------------------------------------------------------------------------------
 import math
 import os
@@ -37,29 +37,28 @@ REGIONAL_DATA_PATHS = {
 st.set_page_config(layout="wide")
 st.header("🌍 Global wave statistics")
 
-# --- Fullscreen CSS: remove Streamlit padding & header/footer whitespace ---
-st.markdown(
-    """
+# --- Fullscreen CSS: expand content column to full viewport & remove header/footer white bands ---
+st.markdown("""
 <style>
-/* Remove padding around the main container and allow true full-width */
-.main .block-container {
-    padding-top: 0rem;
-    padding-bottom: 0rem;
-    padding-left: 0rem;
-    padding-right: 0rem;
-    max-width: 100%;
+/* Expand main content area to full viewport width and remove inner padding */
+div.block-container, .main .block-container {
+    padding: 0rem !important;
+    margin: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
 }
 
-/* Remove the default Streamlit header band and footer (which appear as white space) */
+/* Remove Streamlit header/footer chrome that appears as white space */
 header[data-testid="stHeader"] { height: 0px; visibility: hidden; }
 footer { visibility: hidden; }
 
-/* Ensure the main section has no extra top padding */
-section.main > div { padding-top: 0rem; }
+/* Avoid extra top padding Streamlit injects */
+section.main > div { padding-top: 0rem !important; }
+
+/* Optional: remove the thin right border of the sidebar (visual gutter) */
+[data-testid="stSidebar"] { border-right: none; }
 </style>
-""",
-    unsafe_allow_html=True,
-)
+""", unsafe_allow_html=True)
 
 # -----------------------------
 # Helpers
@@ -392,7 +391,7 @@ if threshold_mode == "Hs limit per Tp (CSV + graph)":
         yaxis=dict(range=[0, max(3.0, float(np.nanmax(hs_limit_curve)) + 0.5)], dtick=0.5),
         showlegend=False
     )
-    # Fix casing: ensure full width
+    # Fix casing: ensure full width in Streamlit
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 else:
     hs_limit_curve = None
@@ -515,7 +514,7 @@ def prep_levels(arr, label, prefer_ticks_from=None, zoom=False):
     lev = auto_levels(base, 50)
     return lev, lev, None
 
-# Fix: ensure boolean expression is closed correctly
+# Close the boolean correctly
 is_percent_metric = ("P(Hs" in label) or ("Operability" in label)
 
 # Robust caps from full field
@@ -561,15 +560,12 @@ def draw_pois(ax, pois):
                 zorder=21, path_effects=halo)
 
 # -----------------------------
-# Plot function (fullscreen adjustments applied)
+# Plot function (no gutters)
 # -----------------------------
 def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
              use_zoom: bool, zoom_proj, region_name: str):
 
-    # Use zoom projection if zoomed, else PlateCarree
     ax_proj = zoom_proj if use_zoom else ccrs.PlateCarree()
-
-    # Bigger figure & hi-res; facecolor to match Streamlit background
     fig = plt.figure(figsize=(24, 10), dpi=200, facecolor="white")
     ax = plt.axes(projection=ax_proj)
 
@@ -596,7 +592,7 @@ def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
     except Exception:
         pass
 
-    # Map features
+    # Features
     feature_scale = "10m" if use_zoom else "110m"
     ax.add_feature(cfeature.LAND.with_scale(feature_scale),
                    facecolor="lightgray", edgecolor="none", zorder=10)
@@ -611,7 +607,7 @@ def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
     else:
         ax.set_global()
 
-    # POIs for NS only
+    # POIs
     if use_zoom and region_name == "North Sea":
         draw_pois(ax, POIS_NS)
 
@@ -621,25 +617,20 @@ def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
         ax.scatter(Lon2D.ravel(), Lat2D.ravel(), s=6, color="gray", alpha=0.6,
                    transform=ccrs.PlateCarree(), zorder=3)
 
-    # Tighter colorbar: minimal fraction/pad avoids a white gutter on the right
-    cb = plt.colorbar(
-        cf, ax=ax,
-        fraction=0.025,   # thinner colorbar
-        pad=0.006,        # minimal gap between axes and colorbar
-        aspect=35,        # balanced length/width
-        ticks=ticks
-    )
+    # Colorbar (tight) — then explicitly position both axes and colorbar to kill gutters
+    cb = plt.colorbar(cf, ax=ax, ticks=ticks)
     cb.set_label(title)
     cb.ax.tick_params(labelsize=8)
 
-    # Title
+    # Title (minimal padding)
     ax.set_title(title, pad=2)
 
-    # Remove ALL margins/whitespace: axes occupy full canvas
-    # This overrides any previous subplots_adjust calls and uses the entire figure.
-    ax.set_position([0.0, 0.0, 1.0, 1.0])  # [left, bottom, width, height] in figure coords
+    # --- Critical: explicit positions (map + colorbar) to remove right gutter ---
+    # [left, bottom, width, height] in figure coordinates
+    ax.set_position([0.00, 0.00, 0.94, 1.00])        # map occupies 94% width
+    cb.ax.set_position([0.955, 0.05, 0.02, 0.90])    # colorbar: 2% width, centered vertically
 
-    # Full-width rendering in Streamlit
+    # Render
     st.pyplot(fig, use_container_width=True)
 
 # -----------------------------
