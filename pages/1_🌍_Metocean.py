@@ -560,7 +560,10 @@ def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
     # Use the exact original resolution (no figsize/dpi changes)
     ax_proj = zoom_proj if use_zoom else ccrs.PlateCarree()
     fig = plt.figure(figsize=(15, 6), dpi=(200 if use_zoom else 150))
-    ax = plt.axes(projection=ax_proj)
+
+    # --- Create Axes MANUALLY (prevents Matplotlib from resizing when adding colorbar) ---
+    # [left, bottom, width, height] in normalized figure coordinates
+    ax = fig.add_axes([0.00, 0.00, 0.93, 1.00], projection=ax_proj)
 
     # Filled colors
     cf = ax.contourf(
@@ -576,20 +579,19 @@ def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
             linewidths=0.45 if use_zoom else 0.4,
             transform=ccrs.PlateCarree(), zorder=2
         )
-        ax.figure.canvas.draw()
         ax.clabel(cs, fontsize=6, inline=True, inline_spacing=(1 if use_zoom else 6),
-                  fmt="%g", manual=False, rightside_up=True)
+                  fmt="%g", manual=False)
     except Exception:
         pass
 
     # Features
     feature_scale = "10m" if use_zoom else "110m"
     ax.add_feature(cfeature.LAND.with_scale(feature_scale),
-                   facecolor="lightgray", edgecolor="none", zorder=10)
+                   facecolor="lightgray", edgecolor="none")
     ax.add_feature(cfeature.COASTLINE.with_scale(feature_scale),
-                   linewidth=0.7 if use_zoom else 0.4, zorder=11)
+                   linewidth=0.7 if use_zoom else 0.4)
     ax.add_feature(cfeature.BORDERS.with_scale(feature_scale),
-                   linewidth=0.3 if use_zoom else 0.2, zorder=12)
+                   linewidth=0.3 if use_zoom else 0.2)
 
     # Extent
     if use_zoom:
@@ -605,13 +607,10 @@ def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
     if show_grid_points:
         Lon2D, Lat2D = np.meshgrid(lon_c, lat_c)
         ax.scatter(Lon2D.ravel(), Lat2D.ravel(), s=6, color="gray", alpha=0.6,
-                   transform=ccrs.PlateCarree(), zorder=3)
+                   transform=ccrs.PlateCarree())
 
     # ---- Tight colorbar in its own axis to avoid right gutter ----
-    # Place map and colorbar explicitly; keep original resolution.
-    # fig coords: [left, bottom, width, height]
-    ax.set_position([0.00, 0.00, 0.94, 1.00])         # map uses 94% width
-    cax = fig.add_axes([0.955, 0.10, 0.02, 0.80])     # colorbar: 2% width, tidy margins
+    cax = fig.add_axes([0.945, 0.10, 0.02, 0.80])  # colorbar: 2% width, tidy margins
     cb = plt.colorbar(cf, cax=cax, ticks=ticks)
     cb.set_label(title)
     cb.ax.tick_params(labelsize=8)
@@ -619,7 +618,7 @@ def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
     # Title (small pad)
     ax.set_title(title, pad=2)
 
-    # IMPORTANT: do not call plt.subplots_adjust(...) here; it would re-introduce gutters
+    # IMPORTANT: do not call plt.subplots_adjust(...) or tight_layout; they re-introduce gutters
 
     # Full-width rendering in Streamlit (container already expanded via CSS)
     st.pyplot(fig, use_container_width=True)
