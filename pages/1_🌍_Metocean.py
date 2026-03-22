@@ -19,10 +19,6 @@ import cartopy.feature as cfeature
 import plotly.graph_objects as go
 from matplotlib import patheffects
 
-
-plt.rcParams["figure.constrained_layout.use"] = False
-plt.rcParams["figure.autolayout"] = False
-
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # -----------------------------
@@ -542,19 +538,15 @@ def draw_pois(ax, pois):
 # -----------------------------
 def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
              use_zoom: bool, zoom_proj, region_name: str):
-
     ax_proj = zoom_proj if use_zoom else ccrs.PlateCarree()
-
-    # --- KEY CHANGE: remove figure padding completely ---
     fig = plt.figure(figsize=(15, 6), dpi=(200 if use_zoom else 150))
-    ax = fig.add_axes([0, 0, 1, 1], projection=ax_proj)  # full canvas
+    ax = plt.axes(projection=ax_proj)
 
     cf = ax.contourf(
         lon_c, lat_c, arr2d,
         levels=filled, cmap=cmap, extend="both",
         transform=ccrs.PlateCarree(), zorder=1
     )
-
     try:
         cs = ax.contour(
             lon_c, lat_c, arr2d, levels=contours, colors="black",
@@ -562,9 +554,8 @@ def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
             transform=ccrs.PlateCarree(), zorder=2
         )
         ax.figure.canvas.draw()
-        ax.clabel(cs, fontsize=6, inline=True,
-                  inline_spacing=(1 if use_zoom else 6),
-                  fmt="%g")
+        ax.clabel(cs, fontsize=6, inline=True, inline_spacing=(1 if use_zoom else 6),
+                  fmt="%g", manual=False, rightside_up=True)
     except Exception:
         pass
 
@@ -586,21 +577,16 @@ def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
 
     if show_grid_points:
         Lon2D, Lat2D = np.meshgrid(lon_c, lat_c)
-        ax.scatter(Lon2D.ravel(), Lat2D.ravel(), s=6, color="gray",
-                   alpha=0.6, transform=ccrs.PlateCarree(), zorder=3)
+        ax.scatter(Lon2D.ravel(), Lat2D.ravel(), s=6, color="gray", alpha=0.6,
+                   transform=ccrs.PlateCarree(), zorder=3)
 
-    # --- colorbar without expanding layout ---
-    cb = fig.colorbar(cf, ax=ax, fraction=0.025, pad=0.01)
+    cb = plt.colorbar(cf, ax=ax, shrink=0.75, aspect=30, pad=0.01, ticks=ticks)
     cb.set_label(title)
     cb.ax.tick_params(labelsize=8)
-
     ax.set_title(title)
-
-    # --- CRITICAL: no padding ---
-    fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
-
-    # --- Streamlit render ---
+    plt.subplots_adjust(left=0.02, right=0.97, top=0.93, bottom=0.06)
     st.pyplot(fig, use_container_width=True)
+
 # -----------------------------
 # Render
 # -----------------------------
