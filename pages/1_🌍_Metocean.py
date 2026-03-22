@@ -6,7 +6,7 @@
 # • Safe color scaling fallbacks if the zoom subset is empty or all-NaN.
 # • North Sea POIs included (toggle remains automatic: shown only on NS).
 # • Per‑Tp Hs limit via CSV + preview chart; table under the map.
-# • NEW: Coastline cleanup (nearest-ocean extrapolation) + land masking.
+# • Coastline cleanup (nearest-ocean extrapolation) + land/lake masking via Cartopy+Shapely.
 # --------------------------------------------------------------------------------
 import math
 import os
@@ -20,8 +20,15 @@ import cartopy.feature as cfeature
 import plotly.graph_objects as go
 from matplotlib import patheffects
 
-# --- NEW imports for coastline cleanup ---
-from cartopy import util as cutil  # land/ocean mask
+# --- NEW: imports for coastline cleanup / masking ---
+from cartopy.io import shapereader as shpreader
+from shapely.ops import unary_union
+try:
+    from shapely import vectorized as shp_vec  # shapely.vectorized.contains / covers
+    SHAPELY_VEC = True
+except Exception:
+    SHAPELY_VEC = False
+
 try:
     from scipy.interpolate import griddata
     from scipy.ndimage import distance_transform_edt
@@ -123,6 +130,47 @@ def percentile_from_cdf(cdf, centers, q):
     w = (q - c_lo)/denom
     return h_lo + w*(h_hi - h_lo)
 
+# ---------- NEW: Natural Earth land+lake mask (cached) ----------
+@st.cache_resource(show_spinner=False)
+def _landlike_geom(resolution: str):
+    """
+    Build a unified polygon of LAND + LAKES from Natural Earth
+    at the requested resolution ('10m'|'50m'|'110m').
+    """
+    land_path = shpreader.natural_earth(resolution=resolution, category='physical', name='land')
+    lakes_path = shpreader.natural_earth(resolution=resolution, category='physical', name='lakes')
+
+    land_geoms = list(shpreader.Reader(land_path).geometries())
+    lakes_geoms = list(shpreader.Reader(lakes_path).geometries())
+
+    # Treat lakes as land-like so the color field does NOT show inside lakes
+    return unary_union([unary_union(land_geoms), unary_union(lakes_geoms)])
+
+def mask_land_to_nan(lon2d: np.ndarray, lat2d: np.ndarray, arr: np.ndarray, resolution: str) -> np.ndarray:
+    """
+    Return a copy of arr where points on LAND or inside LAKES are set to NaN.
+    Uses Shapely vectorized ops if available; otherwise returns arr unchanged (warns).
+    """
+    if not SHAPELY_VEC:
+        st.warning("Shapely vectorized operations not available; skipping land mask.")
+        return arr
+
+    geom = _landlike_geom(resolution)
+    # Prefer 'covers' (includes boundary). Fall back to contains|touches if not present.
+    try:
+        on_land = shp_vec.covers(geom, lon2d, lat2d)   # shapely >=2.0
+    except Exception:
+        on_land = shp_vec.contains(geom, lon2d, lat2d)
+        try:
+            on_land |= shp_vec.touches(geom, lon2d, lat2d)
+        except Exception:
+            pass
+
+    out = arr.copy()
+    out[on_land] = np.nan
+    return out
+# ---------------------------------------------------------------
+
 # -----------------------------
 # Sidebar (controls)
 # -----------------------------
@@ -171,7 +219,7 @@ with st.sidebar:
     )
 
     # -----------------------------
-    # NEW: Coastline cleanup controls
+    # Coastline cleanup controls
     # -----------------------------
     st.subheader("Coastline cleanup")
     fix_coast = st.checkbox(
@@ -185,7 +233,7 @@ with st.sidebar:
         help="Both are nearest‑ocean fills. The distance transform is often the cleanest.",
     )
     zero_epsilon = st.number_input(
-        "Zero threshold ε (treated invalid if value ≤ ε)", 
+        "Zero threshold ε (treated invalid if value ≤ ε)",
         min_value=0.0, max_value=1.0, value=0.010, step=0.005, format="%.3f",
         help="Cells ≤ ε are considered contaminated and are replaced by nearest ocean values."
     )
@@ -624,7 +672,7 @@ def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
     st.pyplot(fig, use_container_width=True)
 
 # -----------------------------
-# Render (with coastline cleanup + land masking)
+# Render (with coastline cleanup + land/lake masking)
 # -----------------------------
 # Build lon/lat grid
 Lon2D, Lat2D = np.meshgrid(lonp, latp)
@@ -652,17 +700,14 @@ if fix_coast and SCIPY_OK:
             )
         else:
             # Distance-transform based nearest fill (cleanest edges)
-            dist, idx = distance_transform_edt(invalid, return_indices=True)
-            # Map every invalid cell to nearest valid index
+            _, idx = distance_transform_edt(invalid, return_indices=True)
             arr_filled = arr_to_plot[idx[0], idx[1]]
 
         arr_to_plot = arr_filled
         filled_cells = int(invalid.sum())
 
-# Mask land so colors stop at the coastline
-arr_plot_masked = cutil.maskoceans(
-    Lon2D, Lat2D, arr_to_plot, inlands=True, resolution=mask_res
-)
+# Mask land + lakes so colors stop cleanly at shorelines and don't fill inland waters
+arr_plot_masked = mask_land_to_nan(Lon2D, Lat2D, arr_to_plot, resolution=mask_res)
 
 plot_map(
     lonp, latp, arr_plot_masked, label,
@@ -695,7 +740,7 @@ if show_debug:
         "\nZoom projection:", zoom_proj_name,
         "\nSource:", os.path.basename(path),
         "\nThreshold mode:", threshold_mode,
-        "\nCoastline fix:", bool(fix_coast), 
+        "\nCoastline fix:", bool(fix_coast),
         "\nMethod:", fill_method if SCIPY_OK else "SciPy missing",
         "\nCells filled (≤ ε):", filled_cells
     )
