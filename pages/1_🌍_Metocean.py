@@ -19,6 +19,10 @@ import cartopy.feature as cfeature
 import plotly.graph_objects as go
 from matplotlib import patheffects
 
+
+plt.rcParams["figure.constrained_layout.use"] = False
+plt.rcParams["figure.autolayout"] = False
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # -----------------------------
