@@ -6,7 +6,7 @@
 # • Safe color scaling fallbacks if the zoom subset is empty or all-NaN.
 # • North Sea POIs included (shown only on North Sea).
 # • Per‑Tp Hs limit via CSV + preview chart; table under the map.
-# • Coastline cleanup: nearest‑ocean extrapolation INSIDE a relaxed water domain, then final land mask.
+# • Coastline cleanup: nearest‑ocean extrapolation + last‑chance fill; buffered land mask.
 # --------------------------------------------------------------------------------
 import math
 import os
@@ -145,14 +145,20 @@ def _land_geom(resolution: str, include_lakes: bool):
         geom = unary_union([geom, unary_union(lakes_geoms)])
     return geom
 
-def land_mask_bool(lon2d, lat2d, resolution='110m', include_lakes=False):
+def land_mask_bool(lon2d, lat2d, resolution='110m', include_lakes=False, buffer_deg=-0.12):
     """
-    Return boolean mask where True means ON LAND (or lakes if include_lakes=True).
+    Return boolean mask where True means ON LAND (or lakes) after applying an optional
+    buffer in degrees. Negative buffer shrinks land (good for coarse grids).
     """
     if not SHAPELY_VEC:
         st.warning("Shapely vectorized ops unavailable; skipping land mask.")
         return np.zeros_like(lon2d, dtype=bool)
     geom = _land_geom(resolution, include_lakes)
+    if buffer_deg and buffer_deg != 0:
+        try:
+            geom = geom.buffer(buffer_deg)  # shrink land slightly (e.g., -0.12°)
+        except Exception:
+            pass
     try:
         on_land = shp_vec.covers(geom, lon2d, lat2d)  # includes boundary
     except Exception:
@@ -163,8 +169,8 @@ def land_mask_bool(lon2d, lat2d, resolution='110m', include_lakes=False):
             pass
     return on_land
 
-def mask_land_to_nan(lon2d, lat2d, arr, resolution='110m', include_lakes=False):
-    on_land = land_mask_bool(lon2d, lat2d, resolution, include_lakes)
+def mask_land_to_nan(lon2d, lat2d, arr, resolution='110m', include_lakes=False, buffer_deg=-0.12):
+    on_land = land_mask_bool(lon2d, lat2d, resolution, include_lakes, buffer_deg)
     out = arr.copy()
     out[on_land] = np.nan
     return out
@@ -236,6 +242,10 @@ with st.sidebar:
         min_value=0.0, max_value=1.0, value=0.010, step=0.005, format="%.3f",
         help="Cells ≤ ε are considered contaminated and are replaced by nearest ocean values."
     )
+    last_chance_fill = st.checkbox(
+        "Force‑fill any remaining holes (global nearest)", True,
+        help="If any NaNs remain anywhere, fill them from the nearest valid neighbour."
+    )
 
     # Land‑mask behaviour
     simplified_mask = st.checkbox(
@@ -245,6 +255,10 @@ with st.sidebar:
     mask_lakes = st.checkbox(
         "Mask lakes", False,
         help="If OFF, inland seas/lakes keep ocean‑like values after extrapolation."
+    )
+    coast_buffer = st.number_input(
+        "Coast mask buffer (deg, negative shrinks)", value=-0.12, step=0.02, min_value=-0.50, max_value=0.50,
+        help="Slightly shrink land polygons so coastal ocean pixels are not masked. Try −0.12°."
     )
 
     if fix_coast and not SCIPY_OK:
@@ -285,7 +299,7 @@ POIS_NS = [
 # -----------------------------
 @st.cache_resource(show_spinner=False)
 def load_metocean_cached(path: str, cache_key: str) -> xr.Dataset:
-    _ = cache_key  # distinct cache entry per path
+    _ = cache_key
     return xr.open_dataset(path)
 
 def load_metocean_strict(path: str, expected_region: str) -> xr.Dataset:
@@ -322,7 +336,7 @@ def load_metocean_strict(path: str, expected_region: str) -> xr.Dataset:
         ds = xr.open_dataset(path)  # uncached reload
     return ds
 
-# Choose dataset
+# Dataset choice
 use_zoom = zoom_region != "None"
 path = REGIONAL_DATA_PATHS[zoom_region] if use_zoom else GLOBAL_DATA_PATH
 if not os.path.exists(path):
@@ -335,7 +349,7 @@ st.sidebar.caption(
     + (f"Zoom '{zoom_region}': **{os.path.basename(path)} (0.5°)**" if use_zoom else "No zoom dataset selected")
 )
 
-# Ensure required variables
+# Ensure required variables exist
 for k in ["prob", "hs_edges", "tp_edges", "lat3_edges", "lon3_edges"]:
     if k not in ds:
         st.error(f"Dataset missing '{k}'")
@@ -655,25 +669,24 @@ def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
     st.pyplot(fig, use_container_width=True)
 
 # -----------------------------
-# Render (robust fill + final mask)
+# Render (robust fill + buffered mask)
 # -----------------------------
 Lon2D, Lat2D = np.meshgrid(lonp, latp)
 
-# 1) RELAXED water domain (never masks narrow straits/small islands)
-#    -> This is the domain where we will FILL missing/near-zero ocean values.
-water_relaxed = ~land_mask_bool(Lon2D, Lat2D, resolution='110m', include_lakes=False)
+# 1) RELAXED water domain (110m, no lakes) — allows narrow straits to be ocean
+water_relaxed = ~land_mask_bool(Lon2D, Lat2D, resolution='110m', include_lakes=False, buffer_deg=-0.12)
 
 arr_to_plot = arr_plot.copy()
-filled_cells = 0
+filled_cells_stageA = 0
+filled_cells_stageB = 0
 
 if fix_coast and SCIPY_OK:
-    # Valid/invalid strictly inside the relaxed water domain
+    # Stage A: nearest fill inside relaxed ocean domain only
     valid = np.isfinite(arr_to_plot) & (arr_to_plot > float(zero_epsilon)) & water_relaxed
     invalid = (~valid) & water_relaxed
 
     if np.any(valid) and np.any(invalid):
         if fill_method.startswith("Nearest (griddata)"):
-            # Griddata nearest over relaxed ocean only
             arr_filled = arr_to_plot.copy()
             arr_filled[invalid] = griddata(
                 (Lon2D[valid], Lat2D[valid]),
@@ -682,20 +695,30 @@ if fix_coast and SCIPY_OK:
                 method='nearest'
             )
         else:
-            # Distance-transform: nearest VALID within the relaxed water domain
-            # Make "zero" locations = VALID points so EDT returns nearest valid indices
-            edt_base = ~valid  # False == valid; distance to nearest False → nearest valid
+            # Distance-transform: nearest VALID inside ocean domain
+            edt_base = ~valid  # distance to nearest False (valid)
             _, idx = distance_transform_edt(edt_base, return_indices=True)
             arr_filled = arr_to_plot.copy()
             arr_filled[invalid] = arr_to_plot[idx[0][invalid], idx[1][invalid]]
 
         arr_to_plot = arr_filled
-        filled_cells = int(invalid.sum())
+        filled_cells_stageA = int(invalid.sum())
 
-# 2) FINAL LAND MASK (respect UI)
+    # Stage B (optional): fill any remaining holes ANYWHERE (global nearest)
+    if last_chance_fill:
+        nanmask = ~np.isfinite(arr_to_plot)
+        if np.any(nanmask):
+            valid2 = ~nanmask
+            if np.any(valid2):
+                _, idx2 = distance_transform_edt(~valid2, return_indices=True)
+                arr_to_plot[nanmask] = arr_to_plot[idx2[0][nanmask], idx2[1][nanmask]]
+                filled_cells_stageB = int(nanmask.sum())
+
+# 2) FINAL LAND MASK with buffer (shrink land so coasts are preserved)
 mask_res_use = '110m' if simplified_mask else ('10m' if use_zoom else '110m')
 arr_plot_masked = mask_land_to_nan(
-    Lon2D, Lat2D, arr_to_plot, resolution=mask_res_use, include_lakes=bool(mask_lakes)
+    Lon2D, Lat2D, arr_to_plot, resolution=mask_res_use,
+    include_lakes=bool(mask_lakes), buffer_deg=float(coast_buffer)
 )
 
 # Plot
@@ -732,7 +755,9 @@ if show_debug:
         "\nThreshold mode:", threshold_mode,
         "\nCoastline fix:", bool(fix_coast),
         "\nMethod:", fill_method if SCIPY_OK else "SciPy missing",
-        "\nCells filled inside relaxed ocean domain (≤ ε):", filled_cells,
+        "\nFilled (Stage A, relaxed ocean) cells:", filled_cells_stageA,
+        "\nFilled (Stage B, global) cells:", filled_cells_stageB,
         "\nFinal mask resolution:", mask_res_use,
-        "\nMask lakes:", bool(mask_lakes)
+        "\nMask lakes:", bool(mask_lakes),
+        "\nCoast buffer (deg):", float(coast_buffer)
     )
