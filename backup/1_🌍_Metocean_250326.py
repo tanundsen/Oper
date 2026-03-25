@@ -7,7 +7,6 @@
 # • North Sea POIs included (shown only on North Sea).
 # • Per‑Tp Hs limit via CSV + preview chart; table under the map.
 # • Coastline cleanup: nearest‑ocean extrapolation + last‑chance fill; buffered land mask.
-# • NEW: Ice-covered cell handling option (flat water 100% or NaN mask).
 # --------------------------------------------------------------------------------
 import math
 import os
@@ -164,7 +163,8 @@ def land_mask_bool(lon2d, lat2d, resolution='110m', include_lakes=False, buffer_
     except Exception:
         on_land = shp_vec.contains(geom, lon2d, lat2d)
     try:
-        on_land |= shp_vec.touches(geom, lon2d, lat2d)
+        on_land \
+= shp_vec.touches(geom, lon2d, lat2d)
     except Exception:
         pass
     return on_land
@@ -176,6 +176,7 @@ def mask_land_to_nan(lon2d, lat2d, arr, resolution='110m', include_lakes=False, 
     return out
 
 # -----------------------------------------------------------
+
 # -----------------------------
 # Sidebar (controls)
 # -----------------------------
@@ -188,7 +189,6 @@ with st.sidebar:
         help="Select a regional zoom (0.5° grid) or None for the global 3° view."
     )
     show_grid_points = st.checkbox("Show metocean grid points (zoom/global)", value=True)
-
     zoom_proj_name = st.selectbox(
         "Zoom projection",
         ["PlateCarree (default)", "Mercator", "Lambert Conformal"],
@@ -262,16 +262,6 @@ with st.sidebar:
         help="Slightly shrink land polygons so coastal ocean pixels are not masked. Try −0.12°."
     )
 
-    # <<< NEW: Ice handling option
-    st.subheader("Ice handling")
-    treat_ice_as = st.selectbox(
-        "Ice-covered grid cells:",
-        ["Assume flat water (100% operability)", "Mask as no data (NaN)"],
-        index=0,
-        help="Cells where the monthly histogram has no samples (tot==0)."
-    )
-    # >>> END NEW
-
     if fix_coast and not SCIPY_OK:
         st.warning("SciPy not available; coastline fix will be skipped. Install 'scipy' to enable.")
 
@@ -285,6 +275,7 @@ REGION_EXTENTS = {
     "North Sea": [-13, 35, 52, 76],
     "Mediterranean": [-10.5, 40.5, 29.75, 46.25],
 }
+
 base_cmap = "turbo"
 clip_pct_robust = 99.6
 
@@ -314,6 +305,7 @@ def load_metocean_cached(path: str, cache_key: str) -> xr.Dataset:
 
 def load_metocean_strict(path: str, expected_region: str) -> xr.Dataset:
     ds = load_metocean_cached(path, cache_key=path)
+
     if ("lon3_edges" not in ds) and ("lon_edges" in ds):
         ds = ds.rename({"lon_edges": "lon3_edges"})
     if ("lat3_edges" not in ds) and ("lat_edges" in ds):
@@ -328,10 +320,10 @@ def load_metocean_strict(path: str, expected_region: str) -> xr.Dataset:
     lon_c = unwrap_lon_centers_from_edges(lon_edges.values)
     lat_c = bin_centers(lat_edges.values)
     got = dict(lon_min=float(np.nanmin(lon_c)), lon_max=float(np.nanmax(lon_c)),
-               lat_min=float(np.nanmin(lat_c)), lat_max=float(np.nanmax(lat_c)))
+               lat_min=float(np.nanmin(lat_c)),  lat_max=float(np.nanmax(lat_c)))
     expected = {
-        "North Sea": dict(lon_min=-13.5, lon_max= 35.5, lat_min=52.0, lat_max=76.5),
-        "Mediterranean": dict(lon_min=-10.5, lon_max= 40.5, lat_min=29.5, lat_max=46.5),
+        "North Sea":      dict(lon_min=-13.5, lon_max= 35.5, lat_min=52.0, lat_max=76.5),
+        "Mediterranean":  dict(lon_min=-10.5, lon_max= 40.5, lat_min=29.5, lat_max=46.5),
         "None": None,
     }
     ok = True
@@ -339,6 +331,7 @@ def load_metocean_strict(path: str, expected_region: str) -> xr.Dataset:
         E = expected[expected_region]
         ok = (E["lon_min"] <= got["lon_min"] <= got["lon_max"] <= E["lon_max"]) and \
              (E["lat_min"] <= got["lat_min"] <= got["lat_max"] <= E["lat_max"])
+
     if not ok:
         st.warning(f"Loaded dataset bounds {got} do not match expected '{expected_region}'. Clearing cache and reloading…")
         st.cache_resource.clear()
@@ -351,6 +344,7 @@ path = REGIONAL_DATA_PATHS[zoom_region] if use_zoom else GLOBAL_DATA_PATH
 if not os.path.exists(path):
     st.error(f"File not found: {path}")
     st.stop()
+
 ds = load_metocean_strict(path, expected_region=zoom_region if use_zoom else "None")
 st.sidebar.caption(
     "Global: **metocean_monthclim.nc (3°)** • "
@@ -370,6 +364,7 @@ hs_edges = ds["hs_edges"].values
 tp_edges = ds["tp_edges"].values
 lat_edges = ds["lat3_edges"].values
 lon_edges = ds["lon3_edges"].values
+
 units = str(ds["hs_edges"].attrs.get("units","")).lower()
 if "cm" in units or (np.nanmax(hs_edges) > 50 and "m" not in units):
     hs_edges = hs_edges / 100.0
@@ -395,10 +390,7 @@ else:
     prob = ds["prob"].sum(dim="month")
     title_suffix = " — Annual"
 
-# Keep PRE-normalization totals to detect no-data (ice) cells
-_tot_before = prob.sum(dim=("hs_bin","tp_bin"))  # <<< NEW: used later for ice handling
-
-# Normalize to per-cell PDF
+_tot_before = prob.sum(dim=("hs_bin","tp_bin"))
 prob = normalize_pdf(prob)  # hs_bin, tp_bin, lat3_bin, lon3_bin
 
 # -----------------------------
@@ -412,7 +404,6 @@ def init_per_tp_limits(default_val: float, tp_centers: np.ndarray):
 
 if threshold_mode == "Hs limit per Tp (CSV + graph)":
     limits_key = init_per_tp_limits(Hcrit, tp_c)
-
     st.subheader("Hs limit per Tp — curve")
     up = st.file_uploader("Import CSV (columns: 'Tp (s)', 'Hs_limit (m)')", type=["csv"], key="hs_csv_upload")
     if up is not None:
@@ -430,6 +421,7 @@ if threshold_mode == "Hs limit per Tp (CSV + graph)":
 
         tp_col = find_col(["tp (s)", "tp", "tp_s"], df_in.columns)
         hs_col = find_col(["hs_limit (m)", "hs limit (m)", "hs_limit", "hs (m)", "hs"], df_in.columns)
+
         if (tp_col is None) or (hs_col is None):
             st.error("CSV must contain columns 'Tp (s)' and 'Hs_limit (m)'.")
         else:
@@ -483,23 +475,29 @@ hs_p50 = percentile_from_cdf(hs_cdf, hs_c, 0.50)
 hs_p90 = percentile_from_cdf(hs_cdf, hs_c, 0.90)
 hs_p95 = percentile_from_cdf(hs_cdf, hs_c, 0.95)
 
-# >>> Precise Exceedance / Operability with within-bin interpolation
+# >>> MOD: within‑bin interpolation for Exceedance / Operability
 if hs_limit_curve is None:
-    # --- P(Hs ≤ Hcrit), single Hcrit ---
+    # --- Precise P(Hs <= Hcrit) with within-bin interpolation (single Hcrit) ---
+    # prob dims: (hs_bin, tp_bin, lat3_bin, lon3_bin), normalized to sum=1
     k = int(np.searchsorted(hs_edges, Hcrit, side="right") - 1)
     k = np.clip(k, 0, len(hs_edges) - 2)
+
     hs_lo = float(hs_edges[k])
     hs_hi = float(hs_edges[k + 1])
     bin_w = max(hs_hi - hs_lo, 1e-12)
     frac = float(np.clip((Hcrit - hs_lo) / bin_w, 0.0, 1.0))
 
+    # Sum probability of all full bins entirely below Hcrit, across Tp
     p_full = prob.isel(hs_bin=slice(0, k)).sum(dim=("hs_bin", "tp_bin"))
+    # Partial contribution from the crossing bin k
     p_part = prob.isel(hs_bin=k).sum(dim="tp_bin") * frac
+
     p_oper = (p_full + p_part) * 100.0
     p_exceed = 100.0 - p_oper
 else:
-    # --- P(Hs ≤ Hs_limit(Tp)), per-Tp curve ---
+    # --- Precise P(Hs <= Hs_limit(Tp)) with within-bin interpolation (per-Tp curve) ---
     Tp_limit_1D = xr.DataArray(hs_limit_curve, dims=["tp_bin"])
+
     HS_LO = xr.DataArray(hs_edges[:-1], dims=["hs_bin"]).broadcast_like(prob)
     HS_HI = xr.DataArray(hs_edges[1:],  dims=["hs_bin"]).broadcast_like(prob)
     HS_LIM = Tp_limit_1D.broadcast_like(prob)
@@ -508,24 +506,17 @@ else:
     above = HS_LO >= HS_LIM
     cross = (~below) & (~above)
 
+    # Full contribution from bins entirely below the limit
     p_full2 = xr.where(below, prob, 0.0).sum(dim=("hs_bin","tp_bin"))
+
+    # Partial contribution from crossing bins (uniform within-bin)
     denom = xr.where((HS_HI - HS_LO) > 0, HS_HI - HS_LO, 1e-12)
     frac2 = xr.where(cross, (HS_LIM - HS_LO) / denom, 0.0).clip(0.0, 1.0)
     p_part2 = (prob * frac2).sum(dim=("hs_bin","tp_bin"))
 
     p_oper = (p_full2 + p_part2) * 100.0
     p_exceed = 100.0 - p_oper
-
-# <<< NEW: Ice handling — decide what to do where there are no samples (tot==0)
-no_data = (_tot_before <= 0)  # True where the monthly/annual histogram is empty (ice)
-if treat_ice_as.startswith("Assume flat water"):
-    p_oper  = xr.where(no_data, 100.0, p_oper)
-    p_exceed = xr.where(no_data, 0.0,  p_exceed)
-else:
-    # Mask out as NaN; leave mean/percentiles untouched (they're 0 due to zero PDF).
-    p_oper  = xr.where(no_data, np.nan, p_oper)
-    p_exceed = xr.where(no_data, np.nan, p_exceed)
-# >>> END NEW
+# <<< MOD end
 
 # Select field to display
 if stat == "Mean Hs (m)":
@@ -725,7 +716,7 @@ filled_cells_stageB = 0
 
 if fix_coast and SCIPY_OK:
     # Stage A: nearest fill inside relaxed ocean domain only
-    valid = np.isfinite(arr_to_plot) & (arr_to_plot > float(zero_epsilon)) & water_relaxed
+    valid   = np.isfinite(arr_to_plot) & (arr_to_plot > float(zero_epsilon)) & water_relaxed
     invalid = (~valid) & water_relaxed
     if np.any(valid) and np.any(invalid):
         if fill_method.startswith("Nearest (griddata)"):
@@ -794,7 +785,6 @@ if show_debug:
         "\nZoom projection:", zoom_proj_name,
         "\nSource:", os.path.basename(path),
         "\nThreshold mode:", threshold_mode,
-        "\nIce handling:", treat_ice_as,  # <<< NEW: show choice
         "\nCoastline fix:", bool(fix_coast),
         "\nMethod:", fill_method if SCIPY_OK else "SciPy missing",
         "\nFilled (Stage A, relaxed ocean) cells:", filled_cells_stageA,
@@ -803,7 +793,7 @@ if show_debug:
         "\nMask lakes:", bool(mask_lakes),
         "\nCoast buffer (deg):", float(coast_buffer)
     )
-    # Sanity: operability + exceedance ≈ 100 (except NaN-masked cells)
+    # Sanity: operability + exceedance ≈ 100
     resid = (p_oper + p_exceed) - 100.0
     st.write("Operability + Exceedance residual (min/max):",
-             float(np.nanmin(resid.values)), float(np.nanmax(resid.values)))
+             float(resid.min().values), float(resid.max().values))
