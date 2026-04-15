@@ -188,7 +188,7 @@ with st.sidebar:
         index=0,
         help="Select a regional zoom (0.5° grid) or None for the global 3° view."
     )
-    show_grid_points = st.checkbox("Show metocean grid points (zoom/global)", value=True)
+    show_grid_points = st.checkbox("Show metocean grid points (zoom/global)", value=False)
     zoom_proj_name = st.selectbox(
         "Zoom projection",
         ["PlateCarree (default)", "Mercator", "Lambert Conformal"],
