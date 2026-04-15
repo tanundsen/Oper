@@ -1,11 +1,12 @@
 # 01_Metocean.py — Metocean Explorer (3° global + 0.5° regional zooms)
 # --------------------------------------------------------------------------------
-# • Zoom regions: None | North Sea | Mediterranean
+# • Zoom regions: None \ North Sea \ Mediterranean
 # • Each zoom loads its own 0.5° dataset; global uses 3° dataset.
 # • Strict loader validates lon/lat bounds to prevent wrong cached dataset reuse.
 # • Safe color scaling fallbacks if the zoom subset is empty or all-NaN.
-# • North Sea POIs included (toggle remains automatic: shown only on NS).
+# • North Sea POIs included (shown only on North Sea).
 # • Per‑Tp Hs limit via CSV + preview chart; table under the map.
+# • Coastline cleanup: nearest‑ocean extrapolation + last‑chance fill; buffered land mask.
 # --------------------------------------------------------------------------------
 import math
 import os
@@ -18,6 +19,21 @@ import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 import plotly.graph_objects as go
 from matplotlib import patheffects
+
+# ---- Land mask / extrapolation dependencies ----
+from cartopy.io import shapereader as shpreader
+from shapely.ops import unary_union
+try:
+    from shapely import vectorized as shp_vec  # shapely.vectorized.contains/covers/touches
+    SHAPELY_VEC = True
+except Exception:
+    SHAPELY_VEC = False
+try:
+    from scipy.interpolate import griddata
+    from scipy.ndimage import distance_transform_edt
+    SCIPY_OK = True
+except Exception:
+    SCIPY_OK = False
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -113,6 +129,54 @@ def percentile_from_cdf(cdf, centers, q):
     w = (q - c_lo)/denom
     return h_lo + w*(h_hi - h_lo)
 
+# ---------- Natural Earth land geometry (cached) ----------
+@st.cache_resource(show_spinner=False)
+def _land_geom(resolution: str, include_lakes: bool):
+    """
+    Build a unified polygon for LAND (and optionally LAKES) at '10m'\'50m'\'110m'.
+    """
+    land_path = shpreader.natural_earth(resolution=resolution, category='physical', name='land')
+    land_geoms = list(shpreader.Reader(land_path).geometries())
+    geom = unary_union(land_geoms)
+    if include_lakes:
+        lakes_path = shpreader.natural_earth(resolution=resolution, category='physical', name='lakes')
+        lakes_geoms = list(shpreader.Reader(lakes_path).geometries())
+        geom = unary_union([geom, unary_union(lakes_geoms)])
+    return geom
+
+def land_mask_bool(lon2d, lat2d, resolution='110m', include_lakes=False, buffer_deg=-0.12):
+    """
+    Return boolean mask where True means ON LAND (or lakes) after applying an optional
+    buffer in degrees. Negative buffer shrinks land (good for coarse grids).
+    """
+    if not SHAPELY_VEC:
+        st.warning("Shapely vectorized ops unavailable; skipping land mask.")
+        return np.zeros_like(lon2d, dtype=bool)
+    geom = _land_geom(resolution, include_lakes)
+    if buffer_deg and buffer_deg != 0:
+        try:
+            geom = geom.buffer(buffer_deg)  # shrink land slightly (e.g., -0.12°)
+        except Exception:
+            pass
+    try:
+        on_land = shp_vec.covers(geom, lon2d, lat2d)  # includes boundary
+    except Exception:
+        on_land = shp_vec.contains(geom, lon2d, lat2d)
+    try:
+        on_land \
+= shp_vec.touches(geom, lon2d, lat2d)
+    except Exception:
+        pass
+    return on_land
+
+def mask_land_to_nan(lon2d, lat2d, arr, resolution='110m', include_lakes=False, buffer_deg=-0.12):
+    on_land = land_mask_bool(lon2d, lat2d, resolution, include_lakes, buffer_deg)
+    out = arr.copy()
+    out[on_land] = np.nan
+    return out
+
+# -----------------------------------------------------------
+
 # -----------------------------
 # Sidebar (controls)
 # -----------------------------
@@ -125,7 +189,6 @@ with st.sidebar:
         help="Select a regional zoom (0.5° grid) or None for the global 3° view."
     )
     show_grid_points = st.checkbox("Show metocean grid points (zoom/global)", value=True)
-
     zoom_proj_name = st.selectbox(
         "Zoom projection",
         ["PlateCarree (default)", "Mercator", "Lambert Conformal"],
@@ -142,7 +205,6 @@ with st.sidebar:
 
     st.subheader("Statistic")
     Hcrit = st.number_input("Hs threshold (m)", 0.1, 15.0, 2.5, step=0.1)
-
     threshold_mode = st.radio(
         "Threshold mode",
         ["Single Hcrit", "Hs limit per Tp (CSV + graph)"],
@@ -162,18 +224,59 @@ with st.sidebar:
         ]
     )
 
+    # -----------------------------
+    # Coastline cleanup controls
+    # -----------------------------
+    st.subheader("Coastline cleanup")
+    fix_coast = st.checkbox(
+        "Fix coast artifacts (near‑zero fill)", True,
+        help="Replace 0/near‑0 coastal cells with the nearest valid ocean value before plotting."
+    )
+    fill_method = st.radio(
+        "Extrapolation method",
+        ["Nearest (griddata)", "Nearest (distance transform)"],
+        index=1,
+        help="Both are nearest‑ocean fills. The distance transform is often the cleanest."
+    )
+    zero_epsilon = st.number_input(
+        "Zero threshold ε (treated invalid if value ≤ ε)",
+        min_value=0.0, max_value=1.0, value=0.010, step=0.005, format="%.3f",
+        help="Cells ≤ ε are considered contaminated and are replaced by nearest ocean values."
+    )
+    last_chance_fill = st.checkbox(
+        "Force‑fill any remaining holes (global nearest)", True,
+        help="If any NaNs remain anywhere, fill them from the nearest valid neighbour."
+    )
+
+    # Land‑mask behaviour
+    simplified_mask = st.checkbox(
+        "Use simplified land mask (110 m) — recommended for 0.5° grids", True,
+        help="Keeps only large land masses; lets extrapolated ocean fill narrow straits/small islands."
+    )
+    mask_lakes = st.checkbox(
+        "Mask lakes", False,
+        help="If OFF, inland seas/lakes keep ocean‑like values after extrapolation."
+    )
+    coast_buffer = st.number_input(
+        "Coast mask buffer (deg, negative shrinks)", value=-0.12, step=0.02, min_value=-0.50, max_value=0.50,
+        help="Slightly shrink land polygons so coastal ocean pixels are not masked. Try −0.12°."
+    )
+
+    if fix_coast and not SCIPY_OK:
+        st.warning("SciPy not available; coastline fix will be skipped. Install 'scipy' to enable.")
+
     st.subheader("Debug")
     show_debug = st.checkbox("Show debug", False)
 
 # -----------------------------
-# Region extents (deg) — Med padded to include outer centers
+# Region extents (deg)
 # -----------------------------
 REGION_EXTENTS = {
     "North Sea": [-13, 35, 52, 76],
     "Mediterranean": [-10.5, 40.5, 29.75, 46.25],
 }
+
 base_cmap = "turbo"
-levels_generic = 50
 clip_pct_robust = 99.6
 
 # -----------------------------
@@ -197,19 +300,12 @@ POIS_NS = [
 # -----------------------------
 @st.cache_resource(show_spinner=False)
 def load_metocean_cached(path: str, cache_key: str) -> xr.Dataset:
-    # cache_key ensures unique cache entry per path
     _ = cache_key
     return xr.open_dataset(path)
 
 def load_metocean_strict(path: str, expected_region: str) -> xr.Dataset:
-    """
-    Load via cache and validate lon/lat against the chosen region.
-    If not matching (e.g., NS served when MED expected), clear cache and reload uncached.
-    """
     ds = load_metocean_cached(path, cache_key=path)
 
-    # Map alternative naming for lon/lat edges if necessary
-    # Standard names used downstream: lon3_edges, lat3_edges
     if ("lon3_edges" not in ds) and ("lon_edges" in ds):
         ds = ds.rename({"lon_edges": "lon3_edges"})
     if ("lat3_edges" not in ds) and ("lat_edges" in ds):
@@ -224,11 +320,10 @@ def load_metocean_strict(path: str, expected_region: str) -> xr.Dataset:
     lon_c = unwrap_lon_centers_from_edges(lon_edges.values)
     lat_c = bin_centers(lat_edges.values)
     got = dict(lon_min=float(np.nanmin(lon_c)), lon_max=float(np.nanmax(lon_c)),
-               lat_min=float(np.nanmin(lat_c)), lat_max=float(np.nanmax(lat_c)))
-
+               lat_min=float(np.nanmin(lat_c)),  lat_max=float(np.nanmax(lat_c)))
     expected = {
-        "North Sea": dict(lon_min=-13.5, lon_max= 35.5, lat_min=52.0,  lat_max=76.5),
-        "Mediterranean": dict(lon_min=-10.5, lon_max= 40.5, lat_min=29.5, lat_max=46.5),
+        "North Sea":      dict(lon_min=-13.5, lon_max= 35.5, lat_min=52.0, lat_max=76.5),
+        "Mediterranean":  dict(lon_min=-10.5, lon_max= 40.5, lat_min=29.5, lat_max=46.5),
         "None": None,
     }
     ok = True
@@ -243,19 +338,14 @@ def load_metocean_strict(path: str, expected_region: str) -> xr.Dataset:
         ds = xr.open_dataset(path)  # uncached reload
     return ds
 
-# Decide which file to load
+# Dataset choice
 use_zoom = zoom_region != "None"
 path = REGIONAL_DATA_PATHS[zoom_region] if use_zoom else GLOBAL_DATA_PATH
-
-# Validate file exists
 if not os.path.exists(path):
     st.error(f"File not found: {path}")
     st.stop()
 
-# Load dataset strictly
 ds = load_metocean_strict(path, expected_region=zoom_region if use_zoom else "None")
-
-# Sidebar caption reflecting the actual selected file
 st.sidebar.caption(
     "Global: **metocean_monthclim.nc (3°)** • "
     + (f"Zoom '{zoom_region}': **{os.path.basename(path)} (0.5°)**" if use_zoom else "No zoom dataset selected")
@@ -315,7 +405,6 @@ def init_per_tp_limits(default_val: float, tp_centers: np.ndarray):
 if threshold_mode == "Hs limit per Tp (CSV + graph)":
     limits_key = init_per_tp_limits(Hcrit, tp_c)
     st.subheader("Hs limit per Tp — curve")
-
     up = st.file_uploader("Import CSV (columns: 'Tp (s)', 'Hs_limit (m)')", type=["csv"], key="hs_csv_upload")
     if up is not None:
         try:
@@ -350,7 +439,7 @@ if threshold_mode == "Hs limit per Tp (CSV + graph)":
                 st.session_state[limits_key] = hs_interp.tolist()
                 st.success(f"Imported {tp_in.size} rows → mapped to {len(tp_c)} Tp bins.")
 
-    hs_limit_curve = np.array(st.session_state[limits_key], dtype=float)
+    hs_limit_curve = np.array(st.session_state["hs_per_tp_limits"], dtype=float)
     hs_limit_curve = np.clip(np.round(hs_limit_curve, 1), 0.0, 15.0)
     st.session_state[limits_key] = hs_limit_curve.tolist()
 
@@ -367,7 +456,7 @@ if threshold_mode == "Hs limit per Tp (CSV + graph)":
         yaxis=dict(range=[0, max(3.0, float(np.nanmax(hs_limit_curve)) + 0.5)], dtick=0.5),
         showlegend=False
     )
-    st.plotly_chart(fig, use_container_Width=True, config={"displayModeBar": False})
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 else:
     hs_limit_curve = None
 
@@ -376,28 +465,58 @@ else:
 # -----------------------------
 hs_w = xr.DataArray(hs_c, dims=["hs_bin"])
 tp_w = xr.DataArray(tp_c, dims=["tp_bin"])
+
 mean_hs = (prob*hs_w).sum(dim=("hs_bin","tp_bin"))
 mean_tp = (prob*tp_w).sum(dim=("hs_bin","tp_bin"))
+
 hs_pdf = prob.sum(dim="tp_bin")
 hs_cdf = hs_pdf.cumsum(dim="hs_bin")
 hs_p50 = percentile_from_cdf(hs_cdf, hs_c, 0.50)
 hs_p90 = percentile_from_cdf(hs_cdf, hs_c, 0.90)
 hs_p95 = percentile_from_cdf(hs_cdf, hs_c, 0.95)
 
-# Exceedance / Operability
+# >>> MOD: within‑bin interpolation for Exceedance / Operability
 if hs_limit_curve is None:
-    mask_exceed_1d = xr.DataArray((hs_c > Hcrit).astype(float), dims=["hs_bin"])
-    p_exceed = (hs_pdf * mask_exceed_1d).sum(dim="hs_bin") * 100.0
-    p_oper = 100.0 - p_exceed
+    # --- Precise P(Hs <= Hcrit) with within-bin interpolation (single Hcrit) ---
+    # prob dims: (hs_bin, tp_bin, lat3_bin, lon3_bin), normalized to sum=1
+    k = int(np.searchsorted(hs_edges, Hcrit, side="right") - 1)
+    k = np.clip(k, 0, len(hs_edges) - 2)
+
+    hs_lo = float(hs_edges[k])
+    hs_hi = float(hs_edges[k + 1])
+    bin_w = max(hs_hi - hs_lo, 1e-12)
+    frac = float(np.clip((Hcrit - hs_lo) / bin_w, 0.0, 1.0))
+
+    # Sum probability of all full bins entirely below Hcrit, across Tp
+    p_full = prob.isel(hs_bin=slice(0, k)).sum(dim=("hs_bin", "tp_bin"))
+    # Partial contribution from the crossing bin k
+    p_part = prob.isel(hs_bin=k).sum(dim="tp_bin") * frac
+
+    p_oper = (p_full + p_part) * 100.0
+    p_exceed = 100.0 - p_oper
 else:
-    Hs_1D = xr.DataArray(hs_c, dims=["hs_bin"])
+    # --- Precise P(Hs <= Hs_limit(Tp)) with within-bin interpolation (per-Tp curve) ---
     Tp_limit_1D = xr.DataArray(hs_limit_curve, dims=["tp_bin"])
-    Hs2D = Hs_1D.broadcast_like(prob)
-    HsLim2D = Tp_limit_1D.broadcast_like(prob)
-    mask_exceed_2d = (Hs2D > HsLim2D).astype(float)
-    mask_oper_2d  = (Hs2D <= HsLim2D).astype(float)
-    p_exceed = (prob * mask_exceed_2d).sum(dim=("hs_bin","tp_bin")) * 100.0
-    p_oper   = (prob * mask_oper_2d ).sum(dim=("hs_bin","tp_bin")) * 100.0
+
+    HS_LO = xr.DataArray(hs_edges[:-1], dims=["hs_bin"]).broadcast_like(prob)
+    HS_HI = xr.DataArray(hs_edges[1:],  dims=["hs_bin"]).broadcast_like(prob)
+    HS_LIM = Tp_limit_1D.broadcast_like(prob)
+
+    below = HS_HI <= HS_LIM
+    above = HS_LO >= HS_LIM
+    cross = (~below) & (~above)
+
+    # Full contribution from bins entirely below the limit
+    p_full2 = xr.where(below, prob, 0.0).sum(dim=("hs_bin","tp_bin"))
+
+    # Partial contribution from crossing bins (uniform within-bin)
+    denom = xr.where((HS_HI - HS_LO) > 0, HS_HI - HS_LO, 1e-12)
+    frac2 = xr.where(cross, (HS_LIM - HS_LO) / denom, 0.0).clip(0.0, 1.0)
+    p_part2 = (prob * frac2).sum(dim=("hs_bin","tp_bin"))
+
+    p_oper = (p_full2 + p_part2) * 100.0
+    p_exceed = 100.0 - p_oper
+# <<< MOD end
 
 # Select field to display
 if stat == "Mean Hs (m)":
@@ -463,15 +582,12 @@ def safe_minmax(a):
     return float(vmin), float(vmax)
 
 def prep_levels(arr, label, prefer_ticks_from=None, zoom=False):
-    """
-    - prefer_ticks_from: array used for deriving ticks (zoomed subset)
-    - zoom: True only for zoomed view
-    Returns: (filled_levels, contour_levels, colorbar_ticks)
-    """
     base = prefer_ticks_from if prefer_ticks_from is not None else arr
     vmin, vmax = safe_minmax(base)
+
     if "P(Hs" in label or "Operability" in label:
         return pct_shading(), pct_ticks(), pct_ticks()
+
     if label.startswith("Mean Tp"):
         if zoom:
             contours = np.arange(math.floor(vmin/0.5)*0.5, math.ceil(vmax/0.5)*0.5 + 1e-9, 0.5)
@@ -479,6 +595,7 @@ def prep_levels(arr, label, prefer_ticks_from=None, zoom=False):
             return filled, contours, contours
         ticks = tp_ticks(1.0, vmin, vmax)
         return tp_shading(base), ticks, ticks
+
     if is_hs_quantity(label):
         if zoom:
             filled = np.arange(math.floor(vmin/0.1)*0.1, math.ceil(vmax/0.1)*0.1 + 1e-9, 0.1)
@@ -486,15 +603,13 @@ def prep_levels(arr, label, prefer_ticks_from=None, zoom=False):
             return filled, contours, contours
         ticks = hs_ticks(0.5, vmin, vmax)
         return hs_shading(base), ticks, ticks
+
     lev = auto_levels(base, 50)
     return lev, lev, None
 
 is_percent_metric = ("P(Hs" in label) or ("Operability" in label)
-
-# Robust caps from full field
 hi_global = 100.0 if is_percent_metric else np.nanpercentile(field2d, clip_pct_robust)
 
-# Zoom-adaptive ticks/caps with fallback
 if use_zoom and not is_percent_metric:
     region, ok = region_slice(field2d, lonp, latp, REGION_EXTENTS[zoom_region])
     if ok:
@@ -545,7 +660,7 @@ def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
     cf = ax.contourf(
         lon_c, lat_c, arr2d,
         levels=filled, cmap=cmap, extend="both",
-        transform=ccrs.PlateCarree(), zorder=1
+        transform=ccrs.PlateCarree(), zorder=1, antialiased=True
     )
     try:
         cs = ax.contour(
@@ -588,10 +703,59 @@ def plot_map(lon_c, lat_c, arr2d, title, filled, contours, cmap, ticks,
     st.pyplot(fig, use_container_width=True)
 
 # -----------------------------
-# Render
+# Render (robust fill + buffered mask)
 # -----------------------------
+Lon2D, Lat2D = np.meshgrid(lonp, latp)
+
+# 1) RELAXED water domain (110m, no lakes) — allows narrow straits to be ocean
+water_relaxed = ~land_mask_bool(Lon2D, Lat2D, resolution='110m', include_lakes=False, buffer_deg=-0.12)
+
+arr_to_plot = arr_plot.copy()
+filled_cells_stageA = 0
+filled_cells_stageB = 0
+
+if fix_coast and SCIPY_OK:
+    # Stage A: nearest fill inside relaxed ocean domain only
+    valid   = np.isfinite(arr_to_plot) & (arr_to_plot > float(zero_epsilon)) & water_relaxed
+    invalid = (~valid) & water_relaxed
+    if np.any(valid) and np.any(invalid):
+        if fill_method.startswith("Nearest (griddata)"):
+            arr_filled = arr_to_plot.copy()
+            arr_filled[invalid] = griddata(
+                (Lon2D[valid], Lat2D[valid]),
+                arr_to_plot[valid],
+                (Lon2D[invalid], Lat2D[invalid]),
+                method='nearest'
+            )
+        else:
+            # Distance-transform: nearest VALID inside ocean domain
+            edt_base = ~valid  # distance to nearest False (valid)
+            _, idx = distance_transform_edt(edt_base, return_indices=True)
+            arr_filled = arr_to_plot.copy()
+            arr_filled[invalid] = arr_to_plot[idx[0][invalid], idx[1][invalid]]
+        arr_to_plot = arr_filled
+        filled_cells_stageA = int(invalid.sum())
+
+    # Stage B (optional): fill any remaining holes ANYWHERE (global nearest)
+    if last_chance_fill:
+        nanmask = ~np.isfinite(arr_to_plot)
+        if np.any(nanmask):
+            valid2 = ~nanmask
+            if np.any(valid2):
+                _, idx2 = distance_transform_edt(~valid2, return_indices=True)
+                arr_to_plot[nanmask] = arr_to_plot[idx2[0][nanmask], idx2[1][nanmask]]
+            filled_cells_stageB = int(nanmask.sum())
+
+# 2) FINAL LAND MASK with buffer (shrink land so coasts are preserved)
+mask_res_use = '110m' if simplified_mask else ('10m' if use_zoom else '110m')
+arr_plot_masked = mask_land_to_nan(
+    Lon2D, Lat2D, arr_to_plot, resolution=mask_res_use,
+    include_lakes=bool(mask_lakes), buffer_deg=float(coast_buffer)
+)
+
+# Plot
 plot_map(
-    lonp, latp, arr_plot, label,
+    lonp, latp, arr_plot_masked, label,
     filled_levels, contour_levels, cmap_use, cbar_ticks,
     use_zoom=use_zoom,
     zoom_proj=get_zoom_projection(zoom_proj_name),
@@ -610,7 +774,7 @@ if threshold_mode == "Hs limit per Tp (CSV + graph)":
 # Debug extras
 # -----------------------------
 if show_debug:
-    finite_pct = 100.0 * np.isfinite(arr_plot).sum() / max(1, arr_plot.size)
+    finite_pct = 100.0 * np.isfinite(arr_plot_masked).sum() / max(1, arr_plot_masked.size)
     st.write(
         "Totals BEFORE normalization:",
         float(_tot_before.min()), float(_tot_before.max())
@@ -620,5 +784,16 @@ if show_debug:
         "\nZoomed:", bool(use_zoom),
         "\nZoom projection:", zoom_proj_name,
         "\nSource:", os.path.basename(path),
-        "\nThreshold mode:", threshold_mode
+        "\nThreshold mode:", threshold_mode,
+        "\nCoastline fix:", bool(fix_coast),
+        "\nMethod:", fill_method if SCIPY_OK else "SciPy missing",
+        "\nFilled (Stage A, relaxed ocean) cells:", filled_cells_stageA,
+        "\nFilled (Stage B, global) cells:", filled_cells_stageB,
+        "\nFinal mask resolution:", mask_res_use,
+        "\nMask lakes:", bool(mask_lakes),
+        "\nCoast buffer (deg):", float(coast_buffer)
     )
+    # Sanity: operability + exceedance ≈ 100
+    resid = (p_oper + p_exceed) - 100.0
+    st.write("Operability + Exceedance residual (min/max):",
+             float(resid.min().values), float(resid.max().values))
