@@ -235,63 +235,49 @@ HS = xr.DataArray(hs_c, dims=["hs_bin"])
 # Parse heave-per-Hs CSV (rows = configurations; columns = TP1..TPn)
 # -----------------------------
 def parse_heave_per_hs(uploaded_csv):
-    df_raw = pd.read_csv(uploaded_csv, header=None)
+    """
+    Robust parser for heave-per-Hs CSV with multi-row header:
 
-    # Find header row that contains many TPk labels
-    header_row_idx = None
-    for i in range(min(6, len(df_raw))):
-        row = df_raw.iloc[i].astype(str).tolist()
-        tps = [c.strip() for c in row if isinstance(c, str) and re.match(r"^TP\d+$", c.strip())]
-        if len(tps) >= 3:
-            header_row_idx = i
-            break
-    if header_row_idx is None:
-        header_row_idx = 1  # fallback
+    Example:
+    Hull alternative,MPM double amplitude,...
+    ,TP1,TP2,TP3,...
+    17.75m,0.0136,0.0136,...
+    15.75m,0.0192,0.0192,...
+    """
 
-    hdr = df_raw.iloc[header_row_idx].astype(str)
-    tp_cols = [j for j, v in enumerate(hdr) if re.match(r"^TP\d+$", v.strip(), flags=re.IGNORECASE)]
-    if len(tp_cols) < 3:
-        st.error("Heave CSV: could not locate TP1..TPn header.")
+    df = pd.read_csv(uploaded_csv, header=None)
+
+    # --- Find the TP header row (row containing TP1) ---
+    header_row_candidates = df.index[
+        df.apply(
+            lambda r: r.astype(str).str.fullmatch(r"TP1").any(),
+            axis=1
+        )
+    ]
+
+    if len(header_row_candidates) == 0:
+        st.error(
+            "Could not find TP header row (TP1, TP2, …) in heave CSV."
+        )
         st.stop()
 
-    # Data rows: first cell = config name; TP columns = numeric values
-    records = []
-    for i in range(header_row_idx + 1, len(df_raw)):
-        first_cell = str(df_raw.iloc[i, 0]).strip()
-        if first_cell == "" or first_cell.lower().startswith("tp"):
-            continue
-        vals = []
-        ok = True
-        for j in tp_cols:
-            try:
-                vals.append(float(df_raw.iloc[i, j]))
-            except Exception:
-                ok = False; break
-        if ok:
-            records.append((first_cell, vals))
+    header_row = header_row_candidates[0]
 
-    if not records:
-        st.error("Heave CSV: no configuration rows found under TP header.")
-        st.stop()
+    # --- Data starts below the TP header ---
+    data = df.iloc[header_row + 1 :].reset_index(drop=True)
 
-    cfg_names = [name for name, _ in records]
-    R_csv = np.vstack([np.array(vals, dtype=float) for _, vals in records])  # [cfg, n_csv]
+    # Configuration names (first column)
+    cfg_names = data.iloc[:, 0].astype(str).tolist()
 
-    # Optional row with Tp centers [s]
-    tp_centers_csv = None
-    for i in range(header_row_idx + 1, len(df_raw)):
-        first_cell = str(df_raw.iloc[i, 0]).strip().lower()
-        if first_cell.startswith("tp"):
-            tmp = []
-            for j in tp_cols:
-                try: tmp.append(float(df_raw.iloc[i, j]))
-                except Exception: tmp.append(np.nan)
-            arr = np.array(tmp, dtype=float)
-            if np.isfinite(arr).sum() >= 3:
-                tp_centers_csv = arr
-            break
+    # Heave per meter Hs (m/m)
+    R_heave_per_Hs = data.iloc[:, 1:].astype(float).values
 
-    return cfg_names, R_csv, tp_centers_csv
+    # Ordinal TP indices (mapping handled later)
+    tp_centers_csv = np.arange(
+        1, R_heave_per_Hs.shape[1] + 1
+    )
+
+    return cfg_names, R_heave_per_Hs, tp_centers_csv
 
 if heave_csv is None:
     st.info("Upload the 'RMS response per meter Hs' CSV to proceed.")
