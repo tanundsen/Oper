@@ -241,7 +241,7 @@ def parse_heave_per_hs(uploaded_csv):
     header_row_idx = None
     for i in range(min(6, len(df_raw))):
         row = df_raw.iloc[i].astype(str).tolist()
-        tps = [c.strip() for c in row if re.match(r"^TP\d+$", c.strip(), flags=re.IGNORECASE)]
+        tps = [c.strip() for c in row if isinstance(c, str) and re.match(r"^TP\d+$", c.strip())]
         if len(tps) >= 3:
             header_row_idx = i
             break
