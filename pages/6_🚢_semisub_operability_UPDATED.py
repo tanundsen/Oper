@@ -16,12 +16,30 @@ import cartopy  # to ensure environment var is honored before data fetches
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 
+from threading import RLock
+_PLOT_LOCK = RLock()
+
+def render_fig(fig):
+    """Render a Matplotlib figure in Streamlit and immediately clear/close it to avoid MediaFileHandler issues."""
+    with _PLOT_LOCK:
+        st.pyplot(fig, width="stretch", clear_figure=True)
+    try:
+        plt.close(fig)
+    except Exception:
+        pass
+
 # -----------------------------
 # Environment & Page setup
 # -----------------------------
 # Use a writable cache on Streamlit Cloud and favor small Natural Earth sets.
-os.environ.setdefault("CARTOPY_DATA_DIR", "/tmp/cartopy")
-pathlib.Path(os.environ["CARTOPY_DATA_DIR"]).mkdir(parents=True, exist_ok=True)
+# Use a persistent cache folder (Streamlit Community Cloud containers may restart; /tmp is ephemeral)
+CARTOPY_PERSIST_DIR = os.path.join(str(pathlib.Path.home()), '.cache', 'cartopy')
+os.environ.setdefault('CARTOPY_DATA_DIR', CARTOPY_PERSIST_DIR)
+pathlib.Path(os.environ['CARTOPY_DATA_DIR']).mkdir(parents=True, exist_ok=True)
+try:
+    cartopy.config['data_dir'] = os.environ['CARTOPY_DATA_DIR']
+except Exception:
+    pass
 
 st.set_page_config(page_title="Semisub: Heave & Operability (North Sea)", layout="wide", page_icon="⚓")
 st.title("Semisub — Heave Response & Operability (North Sea)")
@@ -129,26 +147,22 @@ def plot_zoom(lon, lat, data, title, filled, contours, ticks, cmap=BASE_CMAP_CON
     cb.ax.tick_params(labelsize=8)
     ax.set_title(title)
     plt.subplots_adjust(left=0.02, right=0.97, top=0.93, bottom=0.06)
-    st.pyplot(fig, width="stretch")
+    render_fig(fig)
 
 def interp_rows(M, x_from, x_to):
     return np.vstack([np.interp(x_to, x_from, r) for r in M])
 
-def plot_hs_tp_curve(tp_vals, hs_limits, system_name, note_text=None, hs_limits_2=None, system_name_2=None):
-    """Small line plot of the selected system’s Hs/Tp limit curve (optionally with an overlay curve)."""
+def plot_hs_tp_curve(tp_vals, hs_limits, system_name, note_text=None):
+    """Small line plot of the selected system’s Hs/Tp limit curve."""
     fig, ax = plt.subplots(figsize=(4.2, 2.8), dpi=160)
-    ax.plot(tp_vals, hs_limits, "-o", linewidth=1.8, markersize=3, label=str(system_name))
-    if hs_limits_2 is not None:
-        lbl2 = str(system_name_2) if system_name_2 is not None else "Comparison"
-        ax.plot(tp_vals, hs_limits_2, "--o", linewidth=1.6, markersize=3, label=lbl2, alpha=0.9)
-        ax.legend(fontsize=7, frameon=False, loc="best")
+    ax.plot(tp_vals, hs_limits, "-o", linewidth=1.8, markersize=3)
     ax.set_xlabel("Tp [s]")
     ax.set_ylabel("Hs limit [m]")
     ax.grid(True, alpha=0.35)
     ax.set_title(f"{system_name} — Hs/Tp limit")
     if note_text:
         ax.text(0.01, 0.02, note_text, transform=ax.transAxes, fontsize=7, va="bottom", ha="left", alpha=0.8)
-    st.pyplot(fig, width="stretch")
+    render_fig(fig)
 
 def default_index_for_substring(names, substr, fallback_idx):
     s = substr.lower()
@@ -156,48 +170,6 @@ def default_index_for_substring(names, substr, fallback_idx):
         if s in str(n).lower():
             return i
     return fallback_idx
-
-
-def _norm_label(x):
-    # Robust matching for CSV headers / row labels with quotes, commas, extra spaces
-    s = str(x) if x is not None else ""
-    s = s.strip().strip('"').strip("'")
-    s = re.sub(r"\s+", " ", s)
-    return s.lower()
-
-def split_cfg_name(cfg):
-    """Expected cfg label like: '17.75m, Original' or '15.75m, Blisters'"""
-    s = str(cfg).strip().strip('"').strip("'")
-    parts = [p.strip() for p in s.split(",")]
-    left = parts[0] if parts else s
-    rig = ", ".join(parts[1:]).strip() if len(parts) >= 2 else ""
-    m = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*m", left)
-    draft = float(m.group(1)) if m else None
-    return draft, rig
-
-def unique_drafts_and_rigs(cfg_names):
-    drafts = []
-    rigs = []
-    for c in cfg_names:
-        d, r = split_cfg_name(c)
-        if d is not None:
-            drafts.append(d)
-        if r:
-            rigs.append(r)
-    drafts = sorted(set(drafts))
-    rigs = sorted(set(rigs), key=lambda x: x.lower())
-    return drafts, rigs
-
-def find_cfg(cfg_names, draft, rig):
-    """Find exact config label in cfg_names matching draft + rig (case/space tolerant)."""
-    rig_n = _norm_label(rig)
-    for c in cfg_names:
-        d, r = split_cfg_name(c)
-        if d is None:
-            continue
-        if abs(d - float(draft)) < 1e-9 and _norm_label(r) == rig_n:
-            return c
-    return None
 
 # -----------------------------
 # Load dataset (regional)
@@ -419,10 +391,10 @@ def parse_limits_per_config(csv_file, cfg_names, tp_centers, fallback_val):
     limits_by_cfg = {}
     missing = []
 
-    # Column name matching: tolerant to quotes/commas/spaces
-    col_map = {_norm_label(c): c for c in df.columns if c != tp_col}
+    # Column name matching: case-insensitive, strip spaces
+    col_map = {c.strip().lower(): c for c in df.columns if c != tp_col}
     for cfg in cfg_names:
-        key = _norm_label(cfg)
+        key = cfg.strip().lower()
         if key not in col_map:
             missing.append(cfg)
             continue
@@ -460,74 +432,8 @@ else:
 # -----------------------------
 with st.sidebar:
     st.subheader("Two‑config comparison")
-
-    drafts_cmp, rigs_cmp = unique_drafts_and_rigs(cfg_names)
-
-    cmp_mode = st.radio(
-        "Comparison mode",
-        [
-            "Rig comparison (same draft)",
-            "Rig+Draft comparison",
-            "Manual pick",
-        ],
-        index=0,
-        key="cmp_mode"
-    )
-
-    def _default_rig_index(options, needle, fallback=0):
-        return default_index_for_substring(options, needle, fallback)
-
-    if (cmp_mode == "Rig comparison (same draft)") and (len(drafts_cmp) >= 1) and (len(rigs_cmp) >= 2):
-        cmp_draft = st.selectbox(
-            "Draft for comparison (m)",
-            [f"{d:.2f}" for d in drafts_cmp],
-            index=0,
-            key="cmp_draft"
-        )
-        cmp_draft_val = float(cmp_draft)
-
-        rigA_idx = _default_rig_index(rigs_cmp, "original", 0)
-        rigB_idx = _default_rig_index(rigs_cmp, "blister", min(1, len(rigs_cmp)-1))
-
-        rigA = st.selectbox("Rig A", rigs_cmp, index=rigA_idx, key="cmp_rigA")
-        rigB = st.selectbox("Rig B", rigs_cmp, index=rigB_idx, key="cmp_rigB")
-
-        cfgA_found = find_cfg(cfg_names, cmp_draft_val, rigA)
-        cfgB_found = find_cfg(cfg_names, cmp_draft_val, rigB)
-
-        if (cfgA_found is None) or (cfgB_found is None):
-            st.warning("Could not resolve rigs at this draft from cfg list — falling back to manual pick.")
-            cfgA = st.selectbox("Config A", cfg_names, index=0, key="cmpA_fallback")
-            cfgB = st.selectbox("Config B", cfg_names, index=min(1, len(cfg_names)-1), key="cmpB_fallback")
-        else:
-            cfgA, cfgB = cfgA_found, cfgB_found
-            st.caption(f"Comparing: **{cfgA}** vs **{cfgB}**")
-
-    elif (cmp_mode == "Rig+Draft comparison") and (len(drafts_cmp) >= 1) and (len(rigs_cmp) >= 2):
-        colL, colR = st.columns(2)
-        with colL:
-            rigA_idx = _default_rig_index(rigs_cmp, "original", 0)
-            rigA = st.selectbox("Rig A", rigs_cmp, index=rigA_idx, key="cmp2_rigA")
-            dA = st.selectbox("Draft A (m)", [f"{d:.2f}" for d in drafts_cmp], index=0, key="cmp2_draftA")
-        with colR:
-            rigB_idx = _default_rig_index(rigs_cmp, "blister", min(1, len(rigs_cmp)-1))
-            rigB = st.selectbox("Rig B", rigs_cmp, index=rigB_idx, key="cmp2_rigB")
-            dB = st.selectbox("Draft B (m)", [f"{d:.2f}" for d in drafts_cmp], index=min(1, len(drafts_cmp)-1), key="cmp2_draftB")
-
-        cfgA_found = find_cfg(cfg_names, float(dA), rigA)
-        cfgB_found = find_cfg(cfg_names, float(dB), rigB)
-
-        if (cfgA_found is None) or (cfgB_found is None):
-            st.warning("Could not resolve draft+rig selections from cfg list — falling back to manual pick.")
-            cfgA = st.selectbox("Config A", cfg_names, index=0, key="cmpA2_fallback")
-            cfgB = st.selectbox("Config B", cfg_names, index=min(1, len(cfg_names)-1), key="cmpB2_fallback")
-        else:
-            cfgA, cfgB = cfgA_found, cfgB_found
-            st.caption(f"Comparing: **{cfgA}** vs **{cfgB}**")
-
-    else:
-        cfgA = st.selectbox("Config A", cfg_names, index=0, key="cmpA")
-        cfgB = st.selectbox("Config B", cfg_names, index=min(1, len(cfg_names)-1), key="cmpB")
+    cfgA = st.selectbox("Config A", cfg_names, index=0, key="cmpA")
+    cfgB = st.selectbox("Config B", cfg_names, index=min(1, len(cfg_names)-1), key="cmpB")
 
     cmp_metric = st.selectbox(
         "Metric for comparison",
@@ -563,61 +469,14 @@ with st.sidebar:
 # -----------------------------
 # Compute fields for SELECTED configuration (main UX)
 # -----------------------------
-# Prefer Draft + Rig selectors if configuration labels follow 'XX.XXm, RigName'
-drafts, rigs = unique_drafts_and_rigs(cfg_names)
-rig_sel = None
-Draft_sel_val = None
-
-if (len(drafts) >= 1) and (len(rigs) >= 1):
-    with st.sidebar:
-        st.subheader("Selected configuration")
-        default_rig_idx = default_index_for_substring(rigs, "original", 0)
-        rig_sel = st.selectbox("Rig alternative", rigs, index=default_rig_idx, key="rig_sel")
-        draft_sel = st.selectbox("Draft (m)", [f"{d:.2f}" for d in drafts], index=0, key="draft_sel")
-
-    Draft_sel_val = float(draft_sel)
-    cfg_found = find_cfg(cfg_names, Draft_sel_val, rig_sel)
-    if cfg_found is None:
-        st.error(f"Could not find a configuration matching {Draft_sel_val:.2f}m, {rig_sel}. Falling back to first row.")
-        cfg = cfg_names[0]
-    else:
-        cfg = cfg_found
-else:
-    cfg = st.selectbox("Hull alternative", cfg_names, index=0)
-
+cfg = st.selectbox("Hull alternative", cfg_names, index=0)
 i_cfg = cfg_names.index(cfg)
 
 # --- Small line plot of the selected system’s Hs/Tp limit curve ---
 Hs_limit_tp_sel = Hs_limit_by_cfg[cfg]
 curve_col, spacer = st.columns([1.2, 3.8])
 with curve_col:
-    # Overlay the other rig at the same draft (if available) for quick visual comparison
-    hs2 = None
-    name2 = None
-    if (Draft_sel_val is not None) and (rig_sel is not None) and (len(rigs) >= 2):
-        other_rig = None
-        if "original" in _norm_label(rig_sel):
-            for r in rigs:
-                if "blister" in _norm_label(r):
-                    other_rig = r
-                    break
-        elif "blister" in _norm_label(rig_sel):
-            for r in rigs:
-                if "original" in _norm_label(r):
-                    other_rig = r
-                    break
-        if other_rig is None:
-            for r in rigs:
-                if _norm_label(r) != _norm_label(rig_sel):
-                    other_rig = r
-                    break
-        if other_rig is not None:
-            cfg2 = find_cfg(cfg_names, Draft_sel_val, other_rig)
-            if cfg2 is not None:
-                hs2 = Hs_limit_by_cfg[cfg2]
-                name2 = cfg2
-
-    plot_hs_tp_curve(tp_c, Hs_limit_tp_sel, cfg, note_text=limit_note, hs_limits_2=hs2, system_name_2=name2)
+    plot_hs_tp_curve(tp_c, Hs_limit_tp_sel, cfg, note_text=limit_note)
 
 # Heave per meter Hs vs Tp (for selected cfg)
 fTp = xr.DataArray(R_use[i_cfg], dims=["tp_bin"])  # m/m
@@ -725,6 +584,17 @@ if P_dyn is not None:
     metric_options.append("Dynamic: deep contribution share (%)")
 metric = st.sidebar.selectbox("Metric", metric_options)
 
+# -----------------------------
+# Render control (reduce reruns / crashes on Streamlit Cloud)
+# -----------------------------
+with st.sidebar:
+    st.subheader("Rendering")
+    auto_render = st.checkbox("Auto-render on parameter change", value=False,
+                              help="If off, plots update only when you click Render. This greatly improves stability on Streamlit Cloud.")
+    render_now = st.button("🔄 Render plots", type="primary")
+
+should_render = auto_render or render_now
+
 # Prep 2D arrays (ordered lon,lat for plotting)
 def prep(field):
     arr = field.transpose("lat3_bin","lon3_bin").values
@@ -745,78 +615,78 @@ if P_dyn is not None:
 # -----------------------------
 # Render map depending on metric
 # -----------------------------
-if metric == "Expected heave (m)":
-    filled, contours, ticks = hs_levels_zoom(heave2)
-    plot_zoom(
-        lonp, latp, heave2,
-        f"Expected heave (m) — {cfg}{title_suffix}",
-        filled, contours, ticks,
-        cmap=BASE_CMAP_CONT, show_grid=show_grid
-    )
+if should_render:
+    if metric == "Expected heave (m)":
+        filled, contours, ticks = hs_levels_zoom(heave2)
+        plot_zoom(
+            lonp, latp, heave2,
+            f"Expected heave (m) — {cfg}{title_suffix}",
+            filled, contours, ticks,
+            cmap=BASE_CMAP_CONT, show_grid=show_grid
+        )
 
-elif metric == "Operability: heave ≤ limit (%)":
-    filled = pct_levels_from(cbar_lower)
-    contours = pct_contours_from(cbar_lower)
-    ticks = pct_ticks_from(cbar_lower)
-    plot_zoom(
-        lonp, latp, p_heave2,
-        f"Operability (%) — Heave ≤ {heave_limit:.2f} m{title_suffix}",
-        filled, contours, ticks,
-        cmap=CMAP_OPERABILITY, show_grid=show_grid
-    )
+    elif metric == "Operability: heave ≤ limit (%)":
+        filled = pct_levels_from(cbar_lower)
+        contours = pct_contours_from(cbar_lower)
+        ticks = pct_ticks_from(cbar_lower)
+        plot_zoom(
+            lonp, latp, p_heave2,
+            f"Operability (%) — Heave ≤ {heave_limit:.2f} m{title_suffix}",
+            filled, contours, ticks,
+            cmap=CMAP_OPERABILITY, show_grid=show_grid
+        )
 
-elif metric == "Operability: wave ≤ Hs/Tp limit (%)":
-    filled = pct_levels_from(cbar_lower)
-    contours = pct_contours_from(cbar_lower)
-    ticks = pct_ticks_from(cbar_lower)
-    plot_zoom(
-        lonp, latp, p_wave2,
-        "Operability (%) — Wave (Hs/Tp limit)" + title_suffix,
-        filled, contours, ticks,
-        cmap=CMAP_OPERABILITY, show_grid=show_grid
-    )
+    elif metric == "Operability: wave ≤ Hs/Tp limit (%)":
+        filled = pct_levels_from(cbar_lower)
+        contours = pct_contours_from(cbar_lower)
+        ticks = pct_ticks_from(cbar_lower)
+        plot_zoom(
+            lonp, latp, p_wave2,
+            "Operability (%) — Wave (Hs/Tp limit)" + title_suffix,
+            filled, contours, ticks,
+            cmap=CMAP_OPERABILITY, show_grid=show_grid
+        )
 
-elif metric == "Operability: ALL limits (%)":
-    filled = pct_levels_from(cbar_lower)
-    contours = pct_contours_from(cbar_lower)
-    ticks = pct_ticks_from(cbar_lower)
-    if (P_dyn is not None) and (draft_mode.startswith("Dynamic")):
+    elif metric == "Operability: ALL limits (%)":
+        filled = pct_levels_from(cbar_lower)
+        contours = pct_contours_from(cbar_lower)
+        ticks = pct_ticks_from(cbar_lower)
+        if (P_dyn is not None) and (draft_mode.startswith("Dynamic")):
+            plot_zoom(
+                lonp, latp, p_dyn2,
+                f"Operability (%) — Dynamic draft switching ({deep_cfg_name} → {shallow_cfg_name}){title_suffix}",
+                filled, contours, ticks,
+                cmap=CMAP_OPERABILITY, show_grid=show_grid
+            )
+        else:
+            plot_zoom(
+                lonp, latp, p_both2,
+                f"Operability (%) — Wave ∩ Heave — {cfg}{title_suffix}",
+                filled, contours, ticks,
+                cmap=CMAP_OPERABILITY, show_grid=show_grid
+            )
+
+    elif metric == "Operability: Dynamic deep→shallow (%)" and P_dyn is not None:
+        filled = pct_levels_from(cbar_lower)
+        contours = pct_contours_from(cbar_lower)
+        ticks = pct_ticks_from(cbar_lower)
         plot_zoom(
             lonp, latp, p_dyn2,
             f"Operability (%) — Dynamic draft switching ({deep_cfg_name} → {shallow_cfg_name}){title_suffix}",
             filled, contours, ticks,
             cmap=CMAP_OPERABILITY, show_grid=show_grid
         )
-    else:
+
+    elif metric == "Dynamic: deep contribution share (%)" and (P_dyn_deep_share is not None):
+        # Share map uses 0–100% full range
+        levels_share = np.linspace(0, 100, 51)
+        ticks_share = np.arange(0, 101, 10)
         plot_zoom(
-            lonp, latp, p_both2,
-            f"Operability (%) — Wave ∩ Heave — {cfg}{title_suffix}",
-            filled, contours, ticks,
-            cmap=CMAP_OPERABILITY, show_grid=show_grid
+            lonp, latp, deep_share2,
+            f"Dynamic: deep contribution share (%) — accepted time ({deep_cfg_name} vs {shallow_cfg_name}){title_suffix}",
+            levels_share, ticks_share, ticks_share,
+            cmap="coolwarm", show_grid=show_grid
         )
-
-elif metric == "Operability: Dynamic deep→shallow (%)" and P_dyn is not None:
-    filled = pct_levels_from(cbar_lower)
-    contours = pct_contours_from(cbar_lower)
-    ticks = pct_ticks_from(cbar_lower)
-    plot_zoom(
-        lonp, latp, p_dyn2,
-        f"Operability (%) — Dynamic draft switching ({deep_cfg_name} → {shallow_cfg_name}){title_suffix}",
-        filled, contours, ticks,
-        cmap=CMAP_OPERABILITY, show_grid=show_grid
-    )
-
-elif metric == "Dynamic: deep contribution share (%)" and (P_dyn_deep_share is not None):
-    # Share map uses 0–100% full range
-    levels_share = np.linspace(0, 100, 51)
-    ticks_share = np.arange(0, 101, 10)
-    plot_zoom(
-        lonp, latp, deep_share2,
-        f"Dynamic: deep contribution share (%) — accepted time ({deep_cfg_name} vs {shallow_cfg_name}){title_suffix}",
-        levels_share, ticks_share, ticks_share,
-        cmap="coolwarm", show_grid=show_grid
-    )
-
 st.caption(
     mapping_note + " "
     + limit_note +
@@ -858,15 +728,16 @@ df_ops = pd.DataFrame(results).set_index("Configuration")
 st.dataframe(df_ops.style.format("{:.1f}"))
 
 st.markdown("### Operability comparison chart")
-fig, ax = plt.subplots(figsize=(10,5), dpi=160)
-x = np.arange(len(cfg_names)); w = 0.25
-ax.bar(x - w, df_ops["Heave-only (%)"], width=w, label="Heave-only")
-ax.bar(x,      df_ops["Wave-only (%)"],  width=w, label="Wave-only")
-ax.bar(x + w,  df_ops["Combined (%)"],   width=w, label="Combined")
-ax.set_xticks(x); ax.set_xticklabels(cfg_names)
-ax.set_ylabel("Operability (%)"); ax.set_ylim(0, 100)
-ax.legend(); ax.grid(True, alpha=0.3)
-st.pyplot(fig, width="stretch")
+if should_render:
+    fig, ax = plt.subplots(figsize=(10,5), dpi=160)
+    x = np.arange(len(cfg_names)); w = 0.25
+    ax.bar(x - w, df_ops["Heave-only (%)"], width=w, label="Heave-only")
+    ax.bar(x,      df_ops["Wave-only (%)"],  width=w, label="Wave-only")
+    ax.bar(x + w,  df_ops["Combined (%)"],   width=w, label="Combined")
+    ax.set_xticks(x); ax.set_xticklabels(cfg_names)
+    ax.set_ylabel("Operability (%)"); ax.set_ylim(0, 100)
+    ax.legend(); ax.grid(True, alpha=0.3)
+    render_fig(fig)
 
 # -----------------------------
 # A vs B operability comparison (maps + difference)
@@ -944,38 +815,27 @@ A_np,  latp_cmp, lonp_cmp = to_numpy_sorted(A_map)
 B_np,  _,        _        = to_numpy_sorted(B_map)
 D_np = B_np - A_np  # Δ in percentage points (pp): positive => B better than A
 
-# --- Headline spatial means for the chosen A/B comparison metric ---
-A_mean = float(A_map.mean(dim=("lat3_bin","lon3_bin"), skipna=True))
-B_mean = float(B_map.mean(dim=("lat3_bin","lon3_bin"), skipna=True))
-D_mean = B_mean - A_mean
-
-st.markdown("### Headline (spatial mean)")
-m1, m2, m3 = st.columns(3)
-m1.metric(f"{cfgA}", f"{A_mean:.1f} %")
-m2.metric(f"{cfgB}", f"{B_mean:.1f} %")
-m3.metric("Δ (B − A)", f"{D_mean:+.1f} pp")
-
-
 # A and B maps with operability colorbar lower bound and jet_r
 filledA = pct_levels_from(cbar_lower)
 contA   = pct_contours_from(cbar_lower)
 ticksA  = pct_ticks_from(cbar_lower)
 
-colA, colB = st.columns(2)
-with colA:
-    plot_zoom(
+if should_render:
+    colA, colB = st.columns(2)
+    with colA:
+        plot_zoom(
         lonp_cmp, latp_cmp, A_np,
         f"{cfgA} — {metric_tag_A}{title_suffix}",
         filledA, contA, ticksA,
         cmap=CMAP_OPERABILITY, show_grid=show_grid
-    )
-with colB:
-    plot_zoom(
+        )
+    with colB:
+        plot_zoom(
         lonp_cmp, latp_cmp, B_np,
         f"{cfgB} — {metric_tag_B}{title_suffix}",
         filledA, contA, ticksA,
         cmap=CMAP_OPERABILITY, show_grid=show_grid
-    )
+        )
 
 # Difference map (B - A), diverging colormap, optional zero-centering
 vmax = float(diff_absmax)
@@ -1011,7 +871,7 @@ def plot_diff(lon, lat, data, title, levels):
     cb.ax.tick_params(labelsize=8)
     ax.set_title(title)
     plt.subplots_adjust(left=0.02, right=0.97, top=0.93, bottom=0.06)
-    st.pyplot(fig, width="stretch")
+    render_fig(fig)
 
 st.markdown("### Difference map (B − A)")
 diff_title_tag = base_metric_tag if dyn_applied_to is None else dynamic_tag
@@ -1021,7 +881,10 @@ plot_diff(
     levels_diff
 )
 
-# Spatial means (unweighted) — computed above (headline)
+# Spatial means (unweighted) — computed after any dynamic override so titles and numbers align
+A_mean = float(A_map.mean(dim=("lat3_bin","lon3_bin"), skipna=True))
+B_mean = float(B_map.mean(dim=("lat3_bin","lon3_bin"), skipna=True))
+D_mean = B_mean - A_mean
 
 st.markdown("### Spatial means (unweighted)")
 st.write(
@@ -1032,12 +895,13 @@ st.write(
 
 # Compact bar chart
 st.markdown("### A vs B (means)")
-fig2, ax2 = plt.subplots(figsize=(5.5, 3.2), dpi=160)
-ax2.bar([0, 1, 2], [A_mean, B_mean, D_mean], color=["tab:blue", "tab:orange", "tab:green"])
-ax2.set_xticks([0, 1, 2]); ax2.set_xticklabels([cfgA, cfgB, "Δ(B−A)"])
-ax2.set_ylabel("Operability / Δ [%, pp]")
-ymin = min(0, A_mean, B_mean, D_mean) - 5
-ymax = max(100, A_mean, B_mean, D_mean) + 5
-ax2.set_ylim(ymin, ymax)
-ax2.grid(True, axis="y", alpha=0.3)
-st.pyplot(fig2, width="stretch")
+if should_render:
+    fig2, ax2 = plt.subplots(figsize=(5.5, 3.2), dpi=160)
+    ax2.bar([0, 1, 2], [A_mean, B_mean, D_mean], color=["tab:blue", "tab:orange", "tab:green"])
+    ax2.set_xticks([0, 1, 2]); ax2.set_xticklabels([cfgA, cfgB, "Δ(B−A)"])
+    ax2.set_ylabel("Operability / Δ [%, pp]")
+    ymin = min(0, A_mean, B_mean, D_mean) - 5
+    ymax = max(100, A_mean, B_mean, D_mean) + 5
+    ax2.set_ylim(ymin, ymax)
+    ax2.grid(True, axis="y", alpha=0.3)
+    render_fig(fig2)
