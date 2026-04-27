@@ -15,6 +15,7 @@ import matplotlib.pyplot as plt
 import cartopy  # to ensure environment var is honored before data fetches
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
+from matplotlib import patheffects
 
 from threading import RLock
 _PLOT_LOCK = RLock()
@@ -53,6 +54,59 @@ BASE_CMAP_CONT = "turbo"      # continuous fields (e.g., expected heave)
 CMAP_OPERABILITY = "jet_r"    # operability maps (reversed jet)
 CLIP_PCT = 99.6
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+# -----------------------------
+# North Sea Oil & Gas Fields (POIs)
+# -----------------------------
+POIS_NS = [
+    {"name": "Ekofisk", "nr": 1, "lat": 56.5333, "lon": 3.2000},
+    {"name": "Ula", "nr": 2, "lat": 57.1000, "lon": 2.8333},
+    {"name": "Sleipner", "nr": 3, "lat": 58.3667, "lon": 1.9000},
+    {"name": "Alvheim", "nr": 4, "lat": 59.5667, "lon": 1.9667},
+    {"name": "Oseberg", "nr": 5, "lat": 60.5000, "lon": 2.8333},
+    {"name": "Knarr", "nr": 6, "lat": 61.8833, "lon": 3.8333},
+    {"name": "Ormen Lange", "nr": 7, "lat": 63.2500, "lon": 5.0000},
+    {"name": "Skarv", "nr": 8, "lat": 65.7500, "lon": 7.6667},
+    {"name": "Aasta Hansteen", "nr": 9, "lat": 67.0000, "lon": 8.0000},
+    {"name": "Johan Castberg", "nr": 10, "lat": 72.0000, "lon": 22.5000},
+]
+
+
+def draw_pois(ax):
+    lons = [p["lon"] for p in POIS_NS]
+    lats = [p["lat"] for p in POIS_NS]
+
+    ax.scatter(
+        lons, lats,
+        s=28, c="black", marker="o",
+        transform=ccrs.PlateCarree(),
+        zorder=30
+    )
+
+    offsets = {
+        1:(0.12,0.10), 2:(0.12,0.10), 3:(0.14,0.10),
+        4:(0.14,0.12), 5:(0.14,0.12),
+        6:(0.12,0.12), 7:(0.12,0.12),
+        8:(0.12,0.12), 9:(0.12,0.12),
+        10:(0.14,0.12)
+    }
+
+    halo = [patheffects.withStroke(linewidth=2.2, foreground="white", alpha=0.9)]
+
+    for p in POIS_NS:
+        dx, dy = offsets.get(p["nr"], (0.12, 0.12))
+        ax.text(
+            p["lon"] + dx,
+            p["lat"] + dy,
+            f"{p['nr']} {p['name']}",
+            transform=ccrs.PlateCarree(),
+            fontsize=7,
+            color="black",
+            zorder=31,
+            path_effects=halo
+        )
+
 NS_CANDIDATES = [
     os.path.join(BASE_DIR, "..", "metocean_scatter_050deg_NS_monthclim.nc"),
     os.path.join(BASE_DIR, "metocean_scatter_050deg_NS_monthclim.nc"),
@@ -138,6 +192,8 @@ def plot_zoom(lon, lat, data, title, filled, contours, ticks, cmap=BASE_CMAP_CON
     ax.add_feature(cfeature.COASTLINE.with_scale(FEATURE_SCALE), linewidth=0.7, zorder=11)
     ax.add_feature(cfeature.BORDERS.with_scale(FEATURE_SCALE), linewidth=0.3, zorder=12)
     ax.set_extent(ZOOM_EXTENT, crs=ccrs.PlateCarree())
+
+    draw_pois(ax)
     if show_grid:
         Lon2D, Lat2D = np.meshgrid(lon, lat)
         ax.scatter(Lon2D.ravel(), Lat2D.ravel(), s=6, color="gray", alpha=0.6,
@@ -862,6 +918,8 @@ def plot_diff(lon, lat, data, title, levels):
     ax.add_feature(cfeature.COASTLINE.with_scale(FEATURE_SCALE), linewidth=0.7, zorder=11)
     ax.add_feature(cfeature.BORDERS.with_scale(FEATURE_SCALE), linewidth=0.3, zorder=12)
     ax.set_extent(ZOOM_EXTENT, crs=ccrs.PlateCarree())
+
+    draw_pois(ax)
     if show_grid:
         Lon2D, Lat2D = np.meshgrid(lon, lat)
         ax.scatter(Lon2D.ravel(), Lat2D.ravel(), s=6, color="gray", alpha=0.6,
