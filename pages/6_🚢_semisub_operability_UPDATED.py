@@ -55,7 +55,6 @@ CMAP_OPERABILITY = "jet_r"    # operability maps (reversed jet)
 CLIP_PCT = 99.6
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-
 # -----------------------------
 # North Sea Oil & Gas Fields (POIs)
 # -----------------------------
@@ -74,6 +73,7 @@ POIS_NS = [
 
 
 def draw_pois(ax):
+    """Annotate North Sea oil & gas fields (same styling as Metocean app)."""
     lons = [p["lon"] for p in POIS_NS]
     lats = [p["lat"] for p in POIS_NS]
 
@@ -86,9 +86,8 @@ def draw_pois(ax):
 
     offsets = {
         1:(0.12,0.10), 2:(0.12,0.10), 3:(0.14,0.10),
-        4:(0.14,0.12), 5:(0.14,0.12),
-        6:(0.12,0.12), 7:(0.12,0.12),
-        8:(0.12,0.12), 9:(0.12,0.12),
+        4:(0.14,0.12), 5:(0.14,0.12), 6:(0.12,0.12),
+        7:(0.12,0.12), 8:(0.12,0.12), 9:(0.12,0.12),
         10:(0.14,0.12)
     }
 
@@ -193,6 +192,7 @@ def plot_zoom(lon, lat, data, title, filled, contours, ticks, cmap=BASE_CMAP_CON
     ax.add_feature(cfeature.BORDERS.with_scale(FEATURE_SCALE), linewidth=0.3, zorder=12)
     ax.set_extent(ZOOM_EXTENT, crs=ccrs.PlateCarree())
 
+    # Oil-field annotations (North Sea)
     draw_pois(ax)
     if show_grid:
         Lon2D, Lat2D = np.meshgrid(lon, lat)
@@ -226,6 +226,19 @@ def default_index_for_substring(names, substr, fallback_idx):
         if s in str(n).lower():
             return i
     return fallback_idx
+
+
+def days_in_period(mode: str, month_idx: int) -> float:
+    """Return number of days in the selected aggregation period."""
+    # month_idx is 1..12
+    month_days = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    if str(mode).lower().startswith('annual'):
+        return 365.0
+    try:
+        mi = int(month_idx)
+        return float(month_days[mi-1])
+    except Exception:
+        return 30.0
 
 # -----------------------------
 # Load dataset (regional)
@@ -919,6 +932,7 @@ def plot_diff(lon, lat, data, title, levels):
     ax.add_feature(cfeature.BORDERS.with_scale(FEATURE_SCALE), linewidth=0.3, zorder=12)
     ax.set_extent(ZOOM_EXTENT, crs=ccrs.PlateCarree())
 
+    # Oil-field annotations (North Sea)
     draw_pois(ax)
     if show_grid:
         Lon2D, Lat2D = np.meshgrid(lon, lat)
@@ -950,6 +964,38 @@ st.write(
     f"- **{cfgB}**: {B_mean:.1f} % \n"
     f"- **Δ (B − A)**: **{D_mean:.1f} pp**"
 )
+
+# -----------------------------
+# WoW downtime reduction (relative) — days and %
+# -----------------------------
+# Downtime (%) = 100 - Operability (%). Convert to days using the current aggregation period.
+T_days = days_in_period(mode, month_idx)
+
+downtime_A_days = (max(0.0, 100.0 - A_mean) / 100.0) * T_days
+downtime_B_days = (max(0.0, 100.0 - B_mean) / 100.0) * T_days
+
+downtime_saved_days = downtime_A_days - downtime_B_days  # positive => B reduces downtime vs A
+if downtime_A_days > 1e-12:
+    downtime_reduction_pct = (downtime_saved_days / downtime_A_days) * 100.0
+else:
+    downtime_reduction_pct = np.nan
+
+# Equivalent operable-days gain (B - A)
+operable_days_gain = ((B_mean - A_mean) / 100.0) * T_days
+
+st.markdown("### WoW downtime reduction (relative to Config A)")
+col1, col2, col3, col4 = st.columns(4)
+col1.metric(f"Downtime ({cfgA})", f"{downtime_A_days:.1f} d")
+col2.metric(f"Downtime ({cfgB})", f"{downtime_B_days:.1f} d")
+col3.metric("Downtime reduction", f"{downtime_reduction_pct:+.1f} %")
+col4.metric("Downtime saved", f"{downtime_saved_days:+.1f} d")
+
+st.caption(
+    "Metric: (downtime_A − downtime_B) / downtime_A, where downtime = (100 − operability) × period/100. "
+    f"Period used: {T_days:.0f} days ({'Annual' if str(mode).lower().startswith('annual') else month_label}). "
+    f"Equivalent operable-days gain (B − A): {operable_days_gain:+.1f} d"
+)
+
 
 # Compact bar chart
 st.markdown("### A vs B (means)")
