@@ -41,10 +41,13 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # Data sources (adjust paths if needed)
 # -----------------------------
 GLOBAL_DATA_PATH = os.path.join(BASE_DIR, "..", "metocean_monthclim.nc")  # 3°
+
 REGIONAL_DATA_PATHS = {
     "North Sea": os.path.join(BASE_DIR, "..", "metocean_scatter_050deg_NS_monthclim.nc"),
     "Mediterranean": os.path.join(BASE_DIR, "..", "metocean_scatter_050deg_MED_monthclim.nc"),
+    "Australia": os.path.join(BASE_DIR, "..", "metocean_scatter_050deg_AUS_monthclim.nc"),
 }
+
 
 # -----------------------------
 # Page setup
@@ -184,7 +187,7 @@ with st.sidebar:
     st.subheader("Data")
     zoom_region = st.selectbox(
         "Zoom region",
-        ["None", "North Sea", "Mediterranean"],
+        ["None", "North Sea", "Mediterranean","Australia"],
         index=0,
         help="Select a regional zoom (0.5° grid) or None for the global 3° view."
     )
@@ -274,6 +277,7 @@ with st.sidebar:
 REGION_EXTENTS = {
     "North Sea": [-13, 35, 52, 76],
     "Mediterranean": [-10.5, 40.5, 29.75, 46.25],
+    "Australia": [100, 162, -44, -5],
 }
 
 base_cmap = "turbo"
