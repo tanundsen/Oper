@@ -41,12 +41,12 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # Data sources (adjust paths if needed)
 # -----------------------------
 GLOBAL_DATA_PATH = os.path.join(BASE_DIR, "..", "metocean_monthclim.nc")  # 3°
-
 REGIONAL_DATA_PATHS = {
     "North Sea": os.path.join(BASE_DIR, "..", "metocean_scatter_050deg_NS_monthclim.nc"),
     "Mediterranean": os.path.join(BASE_DIR, "..", "metocean_scatter_050deg_MED_monthclim.nc"),
     "Australia": os.path.join(BASE_DIR, "..", "metocean_scatter_050deg_AUS_monthclim.nc"),
 }
+
 
 
 # -----------------------------
