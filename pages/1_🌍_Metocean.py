@@ -20,8 +20,6 @@ import cartopy.feature as cfeature
 import plotly.graph_objects as go
 from matplotlib import patheffects
 
-st.write("RUNNING FILE:", __file__)
-
 # ---- Land mask / extrapolation dependencies ----
 from cartopy.io import shapereader as shpreader
 from shapely.ops import unary_union
