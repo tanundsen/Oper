@@ -184,7 +184,7 @@ with st.sidebar:
     st.subheader("Data")
     zoom_region = st.selectbox(
         "Zoom region",
-        ["None", "North Sea", "Mediterranean"],
+        ["None", "North Sea", "Mediterranean","test"],
         index=0,
         help="Select a regional zoom (0.5° grid) or None for the global 3° view."
     )
